@@ -1,0 +1,38 @@
+# MCP Server Configuration
+# This file defines the MCP servers that will be loaded by the AI Agent CLI
+
+servers:
+  # Filesystem server for file operations
+  filesystem:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    env: {}
+    description: "Provides file and directory operations"
+    enabled: true
+    
+  # Brave Search server for web search
+  brave_search:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-brave-search"]
+    env:
+      BRAVE_API_KEY: "$BRAVE_API_KEY"  # Will be loaded from environment
+    description: "Provides web search capabilities"
+    enabled: true  # Only enabled if BRAVE_API_KEY is available
+    
+  # Context7 server for documentation
+  context7:
+    command: "npx"
+    args: ["-y", "@upstash/context7-mcp"]
+    env: {}
+    description: "Provides up-to-date documentation for libraries"
+    enabled: true
+
+# Global MCP settings
+global:
+  timeout: 30
+  max_retries: 3
+  connection_timeout: 10
+  rate_limit:
+    enabled: true
+    global_requests_per_minute: 200
+    per_server_requests_per_minute: 100

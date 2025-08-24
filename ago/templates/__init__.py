@@ -1,0 +1,2 @@
+"""Agent templates for Ago"""
+
