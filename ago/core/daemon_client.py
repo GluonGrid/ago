@@ -170,6 +170,16 @@ class DaemonClient:
             "load_workflow", {"workflow_spec": workflow_spec}
         )
 
+    async def run_single_agent(self, template_name: str, agent_name: str = None, config: dict = None) -> Dict[str, Any]:
+        """Run single agent from template (like 'docker run')"""
+        return await self._send_command(
+            "run_single_agent", {
+                "template_name": template_name,
+                "agent_name": agent_name,
+                "config": config or {}
+            }
+        )
+
     async def start_agent(self, workflow_spec: str, agent_name: str) -> Dict[str, Any]:
         """Start a single agent from workflow spec"""
         return await self._send_command(

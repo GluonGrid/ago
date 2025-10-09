@@ -8,13 +8,18 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
-from pocketflow import AsyncFlow
+from pocketflow import AsyncFlow, AsyncNode
 
 # Import local modules using relative imports
 from ..core.base_node import BaseAgentNode
 from ..core.mcp_integration import call_tool_async
 from ..core.supervisor import LLMService, YAMLParser
 from ..core.tool_formatter import ToolFormatter
+
+
+class EndNode(AsyncNode):
+    """Simple end node to terminate ReAct flow cleanly"""
+    pass
 
 
 class AgentReActNode(BaseAgentNode):
@@ -94,7 +99,7 @@ class AgentReActNode(BaseAgentNode):
                 ]
             )
 
-        # Create ReAct prompt using nator pattern + agent template
+        # Create ReAct prompt using exact nator format for better reliability
         prompt = f"""{self.agent_template}
 
 CONVERSATION HISTORY:
@@ -118,14 +123,14 @@ You MUST respond with exactly one YAML block using this format:
 thought: |
   Your step-by-step reasoning about what to do next
 observation: |  
-  What you observed from previous actions (empty if first step)
+  IMPORTANT: Look at the SCRATCHPAD above and summarize what happened in previous actions. If you see TOOL_RESULT entries, describe what tools were used and their results. If this is the first step, write "This is the first step."
 action: think OR use_tool OR final OR delegate_task
 action_input:  # Only if action is use_tool or delegate_task
   tool_name: tool_name_here     # For use_tool
   parameters:                   # For use_tool
     param_name: value_here
-  task_description: |                       # For delegate_task
-    Detailed task description
+  task_description: |                       # For delegate_task - use literal block
+    Detailed task description without numbered lists
 final_answer: |             # Only if action is final
   Your complete response to the user
 ```
@@ -134,9 +139,17 @@ ACTION TYPES:
 1. think: Continue reasoning (no additional fields needed)
 2. use_tool: Execute a specific tool (requires action_input with tool_name and parameters) 
 3. final: Provide final answer (requires final_answer field)
-4. delegate_task: Delegate task to another agent (requires action_input with task_description)
+4. delegate_task: Delegate task to another agent (requires action_input with task_description using literal block format)
 
-IMPORTANT: Always include thought and observation fields, use exact field names, proper YAML formatting."""
+IMPORTANT: 
+1. Always include thought and observation fields
+2. The observation field MUST summarize what happened in previous actions based on the SCRATCHPAD content above
+3. Only use ONE action per response
+4. Use exact field names as shown above
+5. Use proper indentation (4 spaces) for all multi-line fields
+6. Use the | character for multi-line text fields
+7. For task_description in delegate_task: use literal block (|) and avoid numbered lists or special characters that break YAML parsing
+8. Keep single-line fields without the | character"""
 
         try:
             # Make LLM call using existing nator service
@@ -320,6 +333,11 @@ def create_agent_flow(
     """
     # Create ReAct node with agent template
     agent_node = AgentReActNode(agent_name, agent_spec, agent_template)
+    end_node = EndNode()
+
+    # Set up ReAct loop and end transition
+    agent_node - "continue" >> agent_node  # Self-loop for ReAct iterations
+    agent_node - "end" >> end_node          # End transition for completion
 
     # Create flow
     flow = AsyncFlow(start=agent_node)

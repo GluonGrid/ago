@@ -175,6 +175,13 @@ class AgoDaemon:
         elif command == "list_agents":
             return await self._list_agents()
 
+        elif command == "run_single_agent":
+            return await self._run_single_agent(
+                args["template_name"],
+                args.get("agent_name"),
+                args.get("config", {})
+            )
+
         elif command == "chat_message":
             return await self._process_chat_message(args["agent_name"], args["message"])
 

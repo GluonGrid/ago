@@ -14,14 +14,14 @@ from typing import Any, Dict, Optional
 
 import msgpack
 import yaml
-from rich.console import Console
+# Removed Rich import - daemon should not use Rich
 
 # Import local modules
 from .mcp_integration import get_tools_async
 from .process_manager import ProcessManager
 from .registry import registry
 
-console = Console()
+# Removed Rich console - daemon should not use Rich
 
 
 class AgoDaemonV2:
@@ -85,9 +85,9 @@ class AgoDaemonV2:
             self._handle_client, path=str(self.socket_file)
         )
 
-        console.print("🚀 Ago daemon v2 started (Multi-Process Architecture)")
-        console.print(f"PID: {os.getpid()}")
-        console.print(f"Socket: {self.socket_file}")
+        print("🚀 Ago daemon v2 started (Multi-Process Architecture)")
+        print(f"PID: {os.getpid()}")
+        print(f"Socket: {self.socket_file}")
 
         # Keep daemon running
         async with self.server:
@@ -148,7 +148,7 @@ class AgoDaemonV2:
         except Exception as e:
             self.logger.error(f"Error cleaning up: {e}")
 
-        console.print("👋 Ago daemon v2 stopped")
+        print("👋 Ago daemon v2 stopped")
 
     def is_running(self) -> bool:
         """Check if daemon is already running"""
@@ -225,6 +225,13 @@ class AgoDaemonV2:
 
         if command == "load_workflow":
             return await self._load_workflow(args["workflow_spec"])
+
+        elif command == "run_single_agent":
+            return await self._run_single_agent(
+                args["template_name"],
+                args.get("agent_name"),
+                args.get("config", {})
+            )
 
         elif command == "list_agents":
             return await self.process_manager.list_agents()
@@ -396,6 +403,91 @@ class AgoDaemonV2:
 
         except Exception as e:
             self.logger.error(f"Failed to load workflow: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def _run_single_agent(self, template_name: str, agent_name: Optional[str] = None, config: dict = None) -> Dict[str, Any]:
+        """Run a single agent from template (like 'docker run image')"""
+        try:
+            # Generate agent name if not provided
+            if not agent_name:
+                import uuid
+                agent_name = f"{template_name}-{uuid.uuid4().hex[:8]}"
+
+            # Get template from registry
+            template = registry.get_template(template_name, "latest")
+            if not template:
+                return {
+                    "status": "error",
+                    "message": f"Template '{template_name}' not found in registry"
+                }
+
+            # Check and install MCP dependencies
+            from .mcp_dependency_manager import check_template_mcp_dependencies
+            mcp_satisfied = await check_template_mcp_dependencies(template_name, template)
+            if not mcp_satisfied:
+                return {
+                    "status": "error", 
+                    "message": f"Template '{template_name}' has unsatisfied MCP dependencies"
+                }
+
+            # Load tools
+            try:
+                all_tools = await get_tools_async()
+                self.logger.info(f"Loaded {len(all_tools)} tools")
+            except Exception as e:
+                self.logger.error(f"Failed to load tools: {e}")
+                all_tools = []
+
+            # Create agent spec from template + config overrides
+            agent_spec = {
+                "name": agent_name,
+                "template": f"{template_name}:v{template.get('version', 'latest')}",
+                "model": config.get("model", template.get("model", "claude-3-5-haiku-20241022")),
+                "tools": config.get("tools", template.get("tools", [])),
+                "temperature": config.get("temperature", template.get("temperature", 0.2)),
+            }
+
+            # Use template's embedded prompt content
+            agent_template = template.get(
+                "prompt_content",
+                template.get("prompt", "You are a helpful AI assistant."),
+            )
+
+            # Filter tools based on agent spec using simple glob patterns
+            requested_tools = agent_spec.get("tools", [])
+            if requested_tools:
+                import fnmatch
+                agent_tools = []
+                for tool in all_tools:
+                    tool_name = tool.get("name", "")
+                    for pattern in requested_tools:
+                        if fnmatch.fnmatch(tool_name, pattern):
+                            agent_tools.append(tool)
+                            break  # Don't add same tool twice
+            else:
+                agent_tools = []
+
+            # Spawn agent process using process manager
+            result = await self.process_manager.spawn_agent_process(
+                agent_name, agent_spec, agent_template, agent_tools, str(self.socket_file)
+            )
+
+            if result.get("status") == "success":
+                return {
+                    "status": "success",
+                    "message": f"Agent '{agent_name}' started successfully",
+                    "agent": {
+                        "name": agent_name,
+                        "template": template_name,
+                        "model": agent_spec["model"],
+                        "tools": [tool.get("name") for tool in agent_tools],
+                    },
+                }
+            else:
+                return result
+
+        except Exception as e:
+            self.logger.error(f"Failed to run single agent: {e}")
             return {"status": "error", "message": str(e)}
 
     async def _start_agent(self, workflow_spec: str, agent_name: str) -> Dict[str, Any]:

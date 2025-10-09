@@ -220,8 +220,10 @@ class AgoConfig:
         )
 
     def get_local_discovery_paths(self) -> List[str]:
-        """Get local template discovery paths"""
+        """Get local template discovery paths (current working directory only)"""
         config = self.get_config()
+        # Local discovery should only include current working directory
+        # Global builtin/pulled templates are handled separately in registry
         return config.get("discovery", {}).get("local_paths", ["./", "./templates/"])
 
     def get_template_extensions(self) -> List[str]:

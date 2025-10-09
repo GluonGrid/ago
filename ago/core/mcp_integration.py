@@ -60,11 +60,11 @@ class ToolPermissionManager:
 
 # Global MCP config - keep it simple
 _mcp_config = None
-_config_path = "config/mcp_servers.yaml"
+_config_path = Path.home() / ".ago" / "mcp_servers.yaml"
 
 
 def _load_mcp_config():
-    """Load MCP server configuration - copied from working implementation"""
+    """Load MCP server configuration from global user config"""
     global _mcp_config
 
     if _mcp_config is not None:
@@ -73,7 +73,20 @@ def _load_mcp_config():
     load_dotenv()
 
     config_file = Path(_config_path)
+    
+    # Create empty config if it doesn't exist
     if not config_file.exists():
+        config_file.parent.mkdir(exist_ok=True)
+        empty_config = {
+            "servers": {},
+            "global": {
+                "timeout": 30,
+                "max_retries": 3,
+                "connection_timeout": 10
+            }
+        }
+        with open(config_file, 'w') as f:
+            yaml.dump(empty_config, f, default_flow_style=False)
         _mcp_config = {}
         return _mcp_config
 
@@ -81,8 +94,8 @@ def _load_mcp_config():
         with open(config_file, "r") as f:
             config_content = f.read()
 
+        # Handle environment variable substitution
         from string import Template
-
         template = Template(config_content)
         substituted_content = template.substitute(os.environ)
 
@@ -91,11 +104,6 @@ def _load_mcp_config():
         _mcp_config = {}
         for server_name, server_config in config.get("servers", {}).items():
             if not server_config.get("enabled", True):
-                continue
-
-            if server_name == "brave_search" and not os.environ.get(
-                "BRAVE_API_KEY"
-            ):
                 continue
 
             _mcp_config[server_name] = {
@@ -134,7 +142,9 @@ async def get_tools_async() -> List[Dict]:
                     for tool in tools_response.tools:
                         all_tools.append(
                             {
-                                "name": tool.name,
+                                "name": f"{server_name}.{tool.name}",
+                                "original_name": tool.name,  # Keep original for tool calls
+                                "server": server_name,
                                 "description": tool.description,
                                 "parameters": getattr(
                                     tool, "inputSchema", {}
@@ -152,44 +162,60 @@ async def get_tools_async() -> List[Dict]:
 
 
 async def call_tool_async(tool_name: str, parameters: Dict[str, Any]) -> Any:
-    """Call a tool on MCP servers - copied from working implementation"""
+    """Call a tool on MCP servers - handles both prefixed and non-prefixed tools"""
     config = _load_mcp_config()
+    
     if not config:
-        # Fallback for basic read_file
-        if tool_name == "read_file":
-            path = parameters.get("path", "")
-            if not path:
-                return "Error: Missing required parameter 'path'"
+        return f"Error: No MCP servers configured"
+    
+    # Handle prefixed tool names (e.g., "server_filesystem.read_file")
+    if "." in tool_name:
+        server_name, original_tool_name = tool_name.split(".", 1)
+        
+        if server_name in config:
+            server_config = config[server_name]
             try:
-                with open(path, "r") as f:
-                    return f.read()
-            except Exception as e:
-                return f"Error reading file: {str(e)}"
-        return f"Error: Tool {tool_name} not available"
+                server_params = StdioServerParameters(
+                    command=server_config["command"],
+                    args=server_config["args"],
+                    env=server_config.get("env", {}),
+                )
 
-    # Try each server until we find one that has the tool
-    for server_name, server_config in config.items():
-        try:
-            server_params = StdioServerParameters(
-                command=server_config["command"],
-                args=server_config["args"],
-                env=server_config.get("env", {}),
-            )
-
-            async with stdio_client(server_params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-
-                    tools_response = await session.list_tools()
-                    tool_names = [tool.name for tool in tools_response.tools]
-
-                    if tool_name in tool_names:
-                        result = await session.call_tool(tool_name, parameters)
+                async with stdio_client(server_params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.call_tool(original_tool_name, parameters)
                         return result.content
 
-        except Exception as e:
-            print(f"❌ Error calling tool {tool_name} on {server_name}: {e}")
-            continue
+            except Exception as e:
+                raise Exception(f"Error calling tool {tool_name}: {e}")
+        else:
+            raise Exception(f"MCP server '{server_name}' not configured")
+    
+    # Handle non-prefixed tools - try all servers
+    else:
+        for server_name, server_config in config.items():
+            try:
+                server_params = StdioServerParameters(
+                    command=server_config["command"],
+                    args=server_config["args"],
+                    env=server_config.get("env", {}),
+                )
 
-    raise Exception(f"Tool {tool_name} not found on any MCP server")
+                async with stdio_client(server_params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+
+                        tools_response = await session.list_tools()
+                        tool_names = [tool.name for tool in tools_response.tools]
+
+                        if tool_name in tool_names:
+                            result = await session.call_tool(tool_name, parameters)
+                            return result.content
+
+            except Exception as e:
+                print(f"❌ Error calling tool {tool_name} on {server_name}: {e}")
+                continue
+
+        raise Exception(f"Tool {tool_name} not found on any MCP server")
 

@@ -139,18 +139,39 @@ Ago has successfully implemented multi-registry support with full GitHub & GitLa
 - ✅ **Better Conversation Context** - Agents remember their own outgoing messages ✓ ENHANCED
 - ✅ **Organized Template Structure** - Clear separation of built-in vs pulled templates ✓ REORGANIZED
 
-**⏳ REMAINING WORK** (v1.4 priorities):
+**⏳ v1.5 PRIORITIES - Template System Architecture Refactoring:**
 
-**Critical Fixes:**
+**Template System Simplification (High Priority):**
 
-- ⏳ **Built-in Template Loading** - Templates still using fallback prompt instead of rich built-in prompts
-- ⏳ **Daemon Queue Management** - Fix "Unpack failed: incomplete input" when message queues become too large
-- ⏳ **Send Command Performance** - Optimize timeout and reduce delays in inter-agent message sending
+- ⏳ **Remove Version Complexity** - Simplify template system by removing version handling:
+  - Fix `rm` command to work without version matching (currently fails with `latest` vs `1.0.0`)
+  - Remove version logic from template discovery and loading
+  - Keep version field in YAML as purely informational for users
+  - Templates treated as simple config files, not versioned artifacts
+- ⏳ **Simple Template Management Commands**:
+  - `ago template list` - Rename current `ago templates` command for consistency
+  - `ago template copy <template_name> [destination]` - Copy template .agt file to current directory
+  - `ago template edit <template_name>` - Open template in editor (create local copy if needed)
+- ⏳ **Template Discovery Issues**:
+  - **Remove Hardcoded Templates** - Built-in templates should not be hardcoded in package initialization
+  - **Official Repository Integration** - Builtin templates should be pulled from official ago GitHub repository
+  - **Fix Local Discovery** - "Local" should mean current working directory, not machine-wide paths
+  - **Template Auto-Discovery** - Ensure pulled templates are discovered properly by templates command
+  - **Discovery Path Configuration** - Fix `get_local_discovery_paths()` to search correct locations:
+    - `./` - Current working directory (user custom templates)
+    - `~/.ago/registry/templates/builtin/` - Official ago templates
+    - `~/.ago/registry/templates/pulled/` - User-pulled templates
 
-**UX Improvements:**
+**Architecture Decisions Captured:**
+- **Builtin Templates**: Should be pulled from ago/templates GitHub repo, not embedded in package
+- **Local Templates**: User's custom templates in current working directory only
+- **Pulled Templates**: Templates from any remote registry saved to global cache
+- **Discovery**: All three locations should be auto-discovered by all commands
 
+**Additional UX Improvements:**
+
+- ⏳ **Config View Command** - Add `ago config show` subcommand to view current configuration
 - ⏳ **User-Friendly Agent Names** - Remove instance IDs from CLI, use `agent-name-N` format for duplicates
-- ⏳ **Command Structure Polish** - `run` for templates only, `up` for workflows, template management commands
 - ⏳ **Registry Management** - Add priority/status editing for registries
 
 **Testing & Validation:**
@@ -401,32 +422,320 @@ prompt_structure:
 
 1. **✅ Multi-Process Architecture** - COMPLETED v1.3
 2. **✅ Inter-Agent Communication Fixes** - COMPLETED v1.3 (msgpack, clean formatting, conversation history)
-3. **🔄 Template System Completion** - IN PROGRESS
+3. **✅ Template System Completion** - COMPLETED v1.4
    - ✅ Organized structure (`builtin/`, `pulled/`)
    - ✅ Updated pulling to correct directory
    - ✅ Converted to `.agt` format  
-   - ⏳ **CRITICAL**: Fix template loading - built-in templates not loading rich prompts (falling back to "You are a helpful AI assistant.")
-   - ⏳ Test inter-agent communication with proper researcher/assistant system prompts
-4. **🔄 Performance & Reliability Fixes** - IN PROGRESS
-   - ⏳ **HIGH**: Fix daemon queue size issue causing "Unpack failed: incomplete input"
-   - ⏳ **HIGH**: Optimize send command performance (currently timing out/slow)
-   - ⏳ Implement message history rotation/cleanup to prevent queue bloat
-5. **🔄 User Experience Improvements** - REQUESTED
-   - ⏳ Hide instance IDs from users, show `agent-name-1`, `agent-name-2` format
-   - ⏳ Refactor command structure: `run` for templates, `up` for workflows
-   - ⏳ Add template management: `copy/duplicate/edit` (exclude built-ins)
-   - ⏳ Registry management: edit priority/status from CLI
-   - ⏳ Consider renaming `agents` command to `templates`
+   - ✅ **FIXED**: Template loading working correctly - rich prompts loading properly
+   - ✅ Inter-agent communication tested with proper researcher/writer system prompts
+4. **✅ Performance & Reliability Fixes** - COMPLETED v1.4
+   - ✅ **FIXED**: Send command performance - implemented fire-and-forget (returns immediately)
+   - ✅ **IMPROVED**: Background message delivery using asyncio.create_task()
+   - ✅ Message queues working properly for async communication
+5. **✅ User Experience Improvements** - COMPLETED v1.4
+   - ✅ **DOCKER-LIKE COMMANDS**: Complete refactor to Docker-style interface
+     - `ago run researcher` → runs agent from template (like `docker run nginx`)
+     - `ago run researcher --name my-researcher` → runs named agent
+     - `ago create` only saves configs (no auto-run, like `docker build`)
+     - `ago up workflow.spec` → runs multi-agent workflows (like `docker-compose up`)
+   - ✅ **AGENT NAME RESOLUTION**: Simple names work in all commands
+     - `ago chat researcher` works instead of requiring full instance ID
+     - `ago logs my-agent`, `ago stop my-agent`, `ago send from to` all support simple names
+   - ✅ **AUTO-PULL FRAMEWORK**: Template not found detection with helpful guidance
 6. **⏳ Full System Testing** - PENDING
    - Test complete workflows with rich system prompts
    - Verify agents understand their roles (researcher vs assistant specialization)
    - Test `queues --follow` for real-time monitoring
-7. **⏳ Enhanced Prompt Architecture** - FUTURE (prefix/custom/suffix system)
-8. **⏳ Built-in Template Creator Agent** - FUTURE (6th template with validation)
+7. **⏳ Agent-to-Agent Role Mapping** - FUTURE (ADK-inspired role handling)
+8. **⏳ Enhanced Prompt Architecture** - FUTURE (prefix/custom/suffix system)
+9. **⏳ Built-in Template Creator Agent** - FUTURE (6th template with validation)
 
 ---
 
-## 🎯 **v1.5 PLANNED - MCP Management + Custom Tools**
+## 🎭 **Agent-to-Agent Role Mapping Architecture** 
+
+**Inspiration**: Analysis of Google's Agent Development Kit (ADK) reveals sophisticated role mapping patterns for LLM compatibility.
+
+### **The Challenge**
+
+Current AI agents communicate using ad-hoc role systems (e.g., "agent" role in A2A protocol), but LLMs only support standard roles:
+- `user` - Human or external input
+- `assistant` - AI agent responses  
+- `system` - Configuration and context
+
+**Problem**: How do agents maintain context about who they're talking to while staying LLM-compatible?
+
+### **ADK's Solution**
+
+Google ADK solves this through **role mapping with context preservation**:
+
+```python
+# A2A Protocol Level (agent-to-agent)
+{
+  "role": "agent",
+  "content": "Research AI trends",
+  "sender": "CoordinatorAgent"
+}
+
+# LLM Level (after mapping)
+{
+  "role": "user",  # ← Mapped for compatibility
+  "content": "Message from CoordinatorAgent: Research AI trends"
+}
+```
+
+### **Implementation Strategy for Ago**
+
+#### **1. Role Mapping Function**
+```python
+def map_agent_message_for_llm(message, receiving_agent_context):
+    if message.sender_type == "agent":
+        return {
+            "role": "user",
+            "content": f"Message from {message.sender}: {message.content}"
+        }
+    elif message.sender_type == "human":
+        return {
+            "role": "user", 
+            "content": message.content
+        }
+```
+
+#### **2. Context Preservation Techniques**
+- **System Message Updates**: "You are ResearchAgent. You're collaborating with WriterAgent."
+- **Content Enrichment**: Prefix messages with sender context
+- **Session State**: Track conversation mode (human-to-agent vs agent-to-agent)
+
+#### **3. Agent Identity Awareness**
+Agents should understand:
+- Who they are (their role and capabilities)
+- Who they're talking to (human vs specific agent type)
+- Conversation context (task delegation vs collaboration)
+
+### **Benefits for Ago**
+
+1. **LLM Compatibility**: Works with Claude, GPT-4, Gemini, etc.
+2. **Rich Context**: Agents understand collaboration dynamics
+3. **Clean Architecture**: Separate protocol layer from LLM layer
+4. **Future-Proof**: Compatible with any LLM provider
+
+### **Development Priority**
+
+- **v1.4 Research**: Prototype role mapping system
+- **v1.5 Implementation**: Full agent-to-agent context preservation
+- **v2.0 Advanced**: Dynamic role negotiation and collaboration patterns
+
+---
+
+## 🎯 **v1.5 PLANNED - Advanced Agent Reasoning + TUI Interface**
+
+### **Priority: Transform Agent Interactions and Reasoning Capabilities**
+
+**Inspired by**: Toad TUI (Will McGugan) and Claude-Flow architecture patterns
+
+### **1. Toad-Inspired Terminal User Interface (TUI)** 🖥️
+
+**Vision**: Professional, flicker-free terminal interface for agent interaction
+
+#### **Phase 1: Enhanced Chat Command**
+```bash
+ago chat <agent>  # Launch Textual TUI instead of simple CLI
+```
+
+**TUI Features**:
+- **Split-screen Layout**: Conversation + Agent thinking process
+- **Real-time Updates**: Live ReAct reasoning display (Thought→Action→Observation)
+- **Text Selection**: Copy agent responses and reasoning
+- **Smooth Scrolling**: Navigate long conversations effortlessly
+- **Delegation Tracking**: Visual display of task delegations between agents
+- **Tool Usage Display**: Real-time tool execution monitoring
+
+**Technical Implementation**:
+```python
+# ago/cli/tui/agent_chat.py
+from textual.app import App
+from textual.widgets import Input, RichLog, Static
+from textual.containers import Horizontal, Vertical
+
+class AgoChatApp(App):
+    """Toad-inspired chat interface with live agent reasoning"""
+    
+    def compose(self):
+        yield Vertical(
+            Static(f"🤖 Ago Chat - {self.agent_name}", id="header"),
+            Horizontal(
+                RichLog(id="conversation", auto_scroll=True),    # Main chat
+                RichLog(id="agent-thinking", auto_scroll=True),  # ReAct process
+                id="main-split"
+            ),
+            Input(placeholder="Message...", id="input"),
+            id="chat-container"
+        )
+```
+
+#### **Phase 2: Dashboard Command**
+```bash
+ago dashboard  # Launch comprehensive system TUI
+```
+
+**Dashboard Features**:
+- **Agent Status Panel**: Running agents with health indicators
+- **Message Flow Visualization**: Inter-agent communication in real-time
+- **System Logs**: Filterable log viewer with search
+- **Performance Metrics**: Resource usage and message rates
+- **Quick Actions**: Start/stop agents, send messages directly
+
+### **2. Specialized Reasoning Agent Templates** 🧠
+
+**Inspired by**: Claude-Flow's swarm intelligence and specialized agent types
+
+#### **New Built-in Templates**:
+
+1. **🗂️ planner.agt** - Strategic Planning Specialist
+   - Breaks complex problems into structured, actionable steps
+   - Identifies dependencies and potential blockers
+   - Creates detailed project plans with validation
+
+2. **🤔 socratic.agt** - Critical Thinking Specialist  
+   - Challenges assumptions through probing questions
+   - Explores alternative perspectives and edge cases
+   - Deepens understanding before action
+
+3. **🌳 tree-of-thought.agt** - Multi-Path Reasoning Specialist
+   - Explores multiple solution approaches simultaneously
+   - Evaluates different strategies and trade-offs
+   - Recommends optimal paths based on analysis
+
+#### **Enhanced Delegation System**:
+Current agents can now delegate to reasoning specialists:
+
+```yaml
+action: delegate_task
+action_input:
+  task_description: "Create a comprehensive market analysis plan"
+  target_agent: "planner"
+  wait_for_response: true
+```
+
+**Delegation Benefits**:
+- ✅ **Specialized Expertise**: Each reasoning agent optimized for its domain
+- ✅ **Composable Intelligence**: Combine different reasoning approaches
+- ✅ **Visible Process**: See reasoning agents' internal thinking
+- ✅ **Flexible Routing**: Choose appropriate reasoning approach per task
+
+### **3. WebSocket Communication Foundation** 🌐
+
+**Vision**: Prepare for distributed agents while enhancing current system
+
+#### **Phase 1: WebSocket Hub (Foundation)**
+```python
+# ago/core/websocket_hub.py
+class AgentWebSocketHub:
+    """Central WebSocket coordination for agents"""
+    
+    def __init__(self):
+        self.agents = {}          # agent_id -> websocket
+        self.message_history = [] # Persistent message log
+        self.tui_connections = {} # TUI clients for real-time updates
+        
+    async def route_message(self, from_agent: str, to_agent: str, message: dict):
+        """Route messages between agents with TUI updates"""
+        
+    async def broadcast_to_tui(self, event: dict):
+        """Send real-time updates to TUI interfaces"""
+```
+
+#### **Phase 2: Persistent Storage (SQLite)**
+**Inspired by**: Claude-Flow's sophisticated memory architecture
+
+```python
+# ago/storage/sqlite_storage.py  
+class AgentMemoryDB:
+    """Persistent storage for agent interactions and learning"""
+    
+    tables = {
+        "conversations": "agent interactions and history",
+        "delegations": "task delegation patterns and success rates", 
+        "reasoning_sessions": "agent thinking processes and outcomes",
+        "agent_performance": "metrics and learning data",
+        "workflows": "multi-agent workflow definitions",
+        "templates": "agent template usage and effectiveness"
+    }
+```
+
+### **4. Web-Based Workflow Builder** 🎨
+
+**Vision**: Visual workflow design with React Flow
+
+#### **Future Web Commands**:
+```bash
+ago web <agent>      # Web chat interface for specific agent
+ago dashboard --web  # Web-based system dashboard  
+ago builder          # Visual workflow builder
+```
+
+**Builder Features** (React Flow):
+- **Drag-and-Drop**: Agent nodes with visual connections
+- **Delegation Flows**: Draw task routing between agents
+- **Parameter Configuration**: Visual agent setup
+- **Spec Export**: Generate .spec files from visual designs
+- **Template Gallery**: Browse and customize pre-built workflows
+
+### **5. Implementation Timeline**
+
+#### **Week 1-2: TUI Foundation**
+- ✅ Install and configure Textual
+- ✅ Create basic AgoChatApp with split-screen layout
+- ✅ Integrate with current agent communication
+- ✅ Add real-time ReAct process display
+
+#### **Week 3: Reasoning Agent Templates**  
+- ✅ Implement planner.agt, socratic.agt, tree-of-thought.agt
+- ✅ Enhance delegation routing to reasoning agents
+- ✅ Test delegation workflows with specialized reasoning
+
+#### **Week 4: WebSocket Foundation**
+- ✅ Implement basic WebSocket hub for agent communication
+- ✅ Add TUI real-time updates via WebSocket
+- ✅ Begin SQLite storage design for persistent memory
+
+#### **Week 5-6: Dashboard TUI**
+- ✅ Create comprehensive dashboard with agent status
+- ✅ Add message flow visualization
+- ✅ Implement system monitoring and metrics
+
+#### **Week 7-8: Web UI Foundation**
+- ✅ FastAPI backend with WebSocket support
+- ✅ Basic React frontend for chat interface
+- ✅ Web-based agent dashboard prototype
+
+### **6. Technical Architecture Evolution**
+
+#### **Current (v1.4)**:
+```
+CLI → Daemon → Agent Process → ReAct → Response
+```
+
+#### **Target (v1.5)**:
+```
+Textual TUI ↗
+CLI --------→ WebSocket Hub → Agent Process → ReAct → SQLite
+Web UI -----↗                     ↓
+                            Reasoning Agents
+```
+
+### **Benefits of This Approach**:
+
+✅ **Professional UX**: Toad-inspired TUI eliminates terminal jank  
+✅ **Specialized Intelligence**: Reasoning agents enhance problem-solving  
+✅ **Real-time Visibility**: Watch agents think and collaborate  
+✅ **Future-Proof Architecture**: WebSocket foundation for distributed agents  
+✅ **Persistent Learning**: SQLite storage for agent memory and improvement  
+✅ **Visual Workflow Design**: Web-based builder for complex agent workflows  
+
+---
+
+## 🎯 **v1.6 PLANNED - MCP Management + Custom Tools**
 
 ### **1. MCP Server Management System** 🛠️
 
@@ -607,14 +916,19 @@ uv run ago chat TestAgent
 ## 📊 **Progress Tracking**
 
 - ✅ **v1.0**: Magic create + full Docker experience (100% complete)
-- ✅ **v1.1**: Docker registry pattern + configuration system (100% complete)
-- 🔄 **v1.2**: UNIX multi-process + remote registries + tool fixes (next priority)
-- 🎯 **v1.3**: MCP management + custom tools (planned)
+- ✅ **v1.1**: Docker registry pattern + configuration system (100% complete) 
+- ✅ **v1.2**: UNIX multi-process + remote registries + tool fixes (100% complete)
+- ✅ **v1.3**: Multi-process architecture + inter-agent communication (100% complete)
+- ✅ **v1.4**: Docker-like UX + performance fixes + agent name resolution (100% complete)
+- 🎯 **v1.5**: Advanced agent reasoning + TUI interface (current priority)
+- 🛠️ **v1.6**: MCP management + custom tools (next major release)
 - 🌐 **v2.0+**: RAG, web UI, distributed architecture (future)
 
-**Next Developer Focus**: UNIX multi-process architecture is the foundation for all future scalability and reliability improvements. This should be the top priority for v1.2 development.
+**🎉 Major Milestone Achieved**: Ago v1.4 now provides a complete Docker-like experience for AI agents with excellent performance, true process isolation, and intuitive command structure. The system is production-ready for local agent orchestration.
+
+**Current Developer Focus**: Transforming agent interaction with Toad-inspired TUI, specialized reasoning agents (planner/socratic/tree-of-thought), and WebSocket foundation for future distributed architecture.
 
 ---
 
-*Last Updated: August 19, 2025*
+*Last Updated: January 2, 2025*
 

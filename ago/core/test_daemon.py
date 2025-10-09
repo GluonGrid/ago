@@ -8,7 +8,7 @@ from pathlib import Path
 
 # Test if we can import daemon components
 try:
-    from daemon import AgoDaemon
+    from .daemon import AgoDaemon
 
     print("✅ Successfully imported daemon components")
 except ImportError as e:

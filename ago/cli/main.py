@@ -5,6 +5,10 @@ Commands: ago run, ago chat, ago ps, ago logs
 """
 
 import asyncio
+import os
+import platform
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -21,12 +25,62 @@ from ..core.config import config
 # Import daemon client - use relative imports for package
 from ..core.daemon_client import DaemonClient
 from ..core.registry import registry
+from .mcp_commands import register_mcp_commands
 
 # Global CLI app and console
 app = typer.Typer(
     name="ago", help="🤖 Ago - Docker for AI agents", add_completion=False
 )
 console = Console()
+
+
+async def validate_agent_exists(agent_name: str, daemon_client: DaemonClient) -> bool:
+    """
+    Validate that an agent exists and display helpful error message if not.
+    Returns True if agent exists, False otherwise.
+    """
+    try:
+        # Get list of agents from daemon
+        response = await daemon_client.list_agents()
+        
+        # Handle daemon response format
+        if isinstance(response, dict) and "status" in response:
+            agents_data = response.get("agents", {})
+        else:
+            agents_data = response or {}
+
+        # Build agent lookup maps
+        available_agents = set()
+        agent_name_to_instances = {}
+        
+        for instance_id, agent_info in agents_data.items():
+            # Add instance ID (full identifier)
+            available_agents.add(instance_id)
+            
+            # Add simple agent name
+            simple_name = agent_info.get("agent_name", "")
+            if simple_name:
+                available_agents.add(simple_name)
+                if simple_name not in agent_name_to_instances:
+                    agent_name_to_instances[simple_name] = []
+                agent_name_to_instances[simple_name].append(instance_id)
+
+        if agent_name not in available_agents:
+            console.print(f"❌ [red]Agent '{agent_name}' not found[/red]")
+            
+            # Show available simple names first, then instance IDs
+            simple_names = [name for name in agent_name_to_instances.keys()]
+            if simple_names:
+                console.print(f"Available agents: {', '.join(sorted(simple_names))}")
+            else:
+                console.print(f"Available agents: {', '.join(sorted(available_agents))}")
+            return False
+            
+        return True
+        
+    except Exception as e:
+        console.print(f"❌ [red]Error checking agent existence:[/red] {str(e)}")
+        return False
 
 # Global daemon client
 daemon_client = DaemonClient()
@@ -86,152 +140,61 @@ def create(
 
 @app.command()
 def run(
-    workflow_spec_or_template: str = typer.Argument(
-        "workflow.spec",
-        help="Workflow file OR 'template_name agent_name' for direct template run",
-    ),
-    agent_name: Optional[str] = typer.Argument(
-        None, help="Agent name (when running template directly)"
-    ),
-    interactive: bool = typer.Option(
-        False, "--interactive", "-i", help="Run in interactive mode"
-    ),
+    template_name: str = typer.Argument(..., help="Template name to run (like docker image)"),
+    name: Optional[str] = typer.Option(None, "--name", help="Agent instance name"),
+    interactive: bool = typer.Option(False, "--interactive", "-i", help="Run in interactive mode"),
 ):
-    """🚀 Run workflow spec or template directly (like 'docker run')"""
+    """🚀 Run agent from template (like 'docker run image')"""
 
     async def _run():
         try:
-            # Check if this is direct template run or workflow file
-            if agent_name is not None:
-                # Direct template run: ago run researcher DataMiner
-                template_name = workflow_spec_or_template
+            # Generate agent instance name if not provided
+            import uuid
+            agent_instance_name = name or f"{template_name}-{uuid.uuid4().hex[:8]}"
 
-                # Check if template exists in registry
-                template = registry.get_template(template_name)
-                if not template:
-                    console.print(
-                        f"❌ [red]Template '{template_name}' not found in registry[/red]"
-                    )
-                    console.print("Available templates:")
-                    for tmpl in registry.list_templates():
-                        console.print(f"  - {tmpl['name']}:v{tmpl['version']}")
-                    return
+            console.print(f"🚀 [blue]Running template:[/blue] {template_name} → {agent_instance_name}")
 
-                console.print(
-                    f"🚀 [blue]Running template:[/blue] {template_name} → {agent_name}"
-                )
+            # Check if template exists locally, attempt auto-pull if not found
+            template = registry.get_template(template_name)
+            if not template:
+                console.print(f"⚠️  [yellow]Template '{template_name}' not found locally[/yellow]")
+                
+                # TODO: Auto-pull functionality (like docker pull)
+                # For now, show available templates and suggest pulling
+                console.print("\n📋 [yellow]Available local templates:[/yellow]")
+                templates = registry.list_templates()
+                for tmpl in templates:
+                    console.print(f"  • {tmpl['name']}:v{tmpl['version']} - {tmpl.get('description', 'No description')}")
+                
+                console.print(f"\n💡 [dim]Future: 'ago pull {template_name}' will auto-pull from remote registries[/dim]")
+                console.print(f"💡 [dim]For now, use 'ago templates' to see available templates[/dim]")
+                return
 
-                # Create temporary workflow spec from template
-                temp_workflow = {
-                    "spec": {
-                        "agents": [
-                            {
-                                "name": agent_name,
-                                "template": f"{template_name}:v{template.get('version', 'latest')}",
-                                "model": template["model"],
-                                "tools": template["tools"],
-                                "temperature": template.get("temperature", 0.2),
-                            }
-                        ]
-                    }
-                }
+            # Use daemon's single agent runner (no temp files needed!)
+            result = await daemon_client.run_single_agent(template_name, agent_instance_name)
+            
+            if result.get("status") == "error":
+                console.print(f"❌ [red]Error:[/red] {result['message']}")
+                return
 
-                # We need to create a temporary workflow file for daemon compatibility
-                import tempfile
-
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".spec", delete=False
-                ) as f:
-                    yaml.dump(temp_workflow, f)
-                    temp_workflow_path = f.name
-
-                try:
-                    result = await daemon_client.load_workflow(temp_workflow_path)
-                finally:
-                    # Clean up temp file
-                    Path(temp_workflow_path).unlink(missing_ok=True)
-
-                if result["status"] == "error":
-                    console.print(f"❌ [red]Error:[/red] {result['message']}")
-                    return
-
-                console.print(f"✅ [green]Template agent started:[/green] {agent_name}")
-
-            else:
-                # Regular workflow file run
-                workflow_spec = workflow_spec_or_template
-
-                if not Path(workflow_spec).exists():
-                    console.print(
-                        f"❌ [red]Workflow file not found:[/red] {workflow_spec}"
-                    )
-                    console.print(
-                        "💡 Use [bold]ago create[/bold] to create agents or [bold]ago up[/bold] for registry-based workflows"
-                    )
-                    return
-
-                # Load workflow in daemon (starts daemon if needed)
-                result = await daemon_client.load_workflow(workflow_spec)
-
-                if result["status"] == "error":
-                    console.print(f"❌ [red]Error:[/red] {result['message']}")
-                    return
-
-                console.print(
-                    f"✅ [green]Successfully loaded workflow:[/green] {workflow_spec}"
-                )
-
-            console.print(f"📊 [blue]Agents created:[/blue] {len(result['agents'])}")
-
-            # Display created agents in table
-            table = Table()
-            table.add_column("Agent Name", style="cyan")
-            table.add_column("Type", style="green")
-            table.add_column("Status", style="yellow")
-
-            for agent_name_result in result["agents"]:
-                table.add_row(agent_name_result, "ReAct Agent", "Running")
-
-            console.print(table)
-
+            # Success!
+            console.print(f"✅ [green]{result['message']}[/green]")
+            
+            agent_info = result.get("agent", {})
+            console.print(f"📊 [blue]Template:[/blue] {agent_info.get('template', template_name)}")
+            console.print(f"🤖 [blue]Model:[/blue] {agent_info.get('model', 'unknown')}")
+            if agent_info.get('tools'):
+                console.print(f"🛠️  [blue]Tools:[/blue] {', '.join(agent_info['tools'])}")
+            
+            console.print(f"\n💬 [cyan]Chat with your agent:[/cyan] ago chat {agent_instance_name}")
+            console.print(f"📋 [cyan]View logs:[/cyan] ago logs {agent_instance_name}")
+            console.print(f"⏹️  [cyan]Stop agent:[/cyan] ago stop {agent_instance_name}")
+            
             if interactive:
-                console.print("\n💬 [yellow]Interactive mode activated[/yellow]")
-                console.print("Available commands:")
-                console.print(
-                    "  [cyan]chat <agent_name>[/cyan] - Chat with specific agent"
-                )
-                console.print("  [cyan]logs <agent_name>[/cyan] - View agent logs")
-                console.print(
-                    "  [cyan]send <from_agent> <to_agent> <message>[/cyan] - Send inter-agent message"
-                )
-                console.print("  [cyan]queues[/cyan] - View message queues")
-                console.print("  [cyan]exit[/cyan] - Exit interactive mode")
-
-                # Simple interactive loop
-                while True:
-                    try:
-                        command = input("\nago> ").strip().split()
-                        if not command:
-                            continue
-                        if command[0] == "exit":
-                            break
-                        elif command[0] == "chat" and len(command) > 1:
-                            await _chat_interactive(command[1])
-                        elif command[0] == "logs" and len(command) > 1:
-                            await _logs(command[1])
-                        elif command[0] == "send" and len(command) > 3:
-                            await _send_message(
-                                command[1], command[2], " ".join(command[3:])
-                            )
-                        elif command[0] == "queues":
-                            await _queues()
-                        else:
-                            console.print("❌ Unknown command or invalid syntax")
-                    except KeyboardInterrupt:
-                        break
-                    except EOFError:
-                        break
-
+                # Start interactive chat immediately
+                console.print("\n🔄 [blue]Starting interactive mode...[/blue]")
+                await _chat_interactive(agent_instance_name)
+        
         except Exception as e:
             console.print(f"❌ [red]Error:[/red] {str(e)}")
 
@@ -325,27 +288,30 @@ def ps():
 
 
 @app.command()
-def chat(agent_name: str):
+def chat(
+    agent_name: str,
+    simple: bool = typer.Option(
+        False, "--simple", "-s", help="Use simple CLI mode instead of TUI"
+    ),
+):
     """💬 Chat with a specific agent (like 'docker exec -it')"""
 
+    # Try TUI mode first (if not disabled and in TTY)
+    if not simple and sys.stdout.isatty():
+        try:
+            from .tui.agent_chat import run_chat_tui
+            run_chat_tui(agent_name)
+            return
+        except ImportError as e:
+            console.print(f"[yellow]TUI not available ({e}), using simple mode[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]TUI failed ({e}), using simple mode[/yellow]")
+    
+    # Fallback to simple CLI mode
     async def _chat():
         try:
-            # Check if agent exists
-            response = await daemon_client.list_agents()
-
-            # Handle daemon response format
-            if isinstance(response, dict) and "status" in response:
-                agents_data = response.get("agents", [])
-                if isinstance(agents_data, list):
-                    agents = {agent["name"]: agent for agent in agents_data}
-                else:
-                    agents = agents_data
-            else:
-                agents = response
-
-            if agent_name not in agents:
-                console.print(f"❌ [red]Agent '{agent_name}' not found[/red]")
-                console.print(f"Available agents: {', '.join(agents.keys())}")
+            # Validate agent exists
+            if not await validate_agent_exists(agent_name, daemon_client):
                 return
 
             console.print(f"💬 [green]Starting chat with {agent_name}[/green]")
@@ -423,6 +389,10 @@ def logs(
 
     async def _logs():
         try:
+            # Validate agent exists
+            if not await validate_agent_exists(agent_name, daemon_client):
+                return
+
             logs_data = await daemon_client.get_agent_logs(agent_name, tail)
 
             if logs_data.get("status") == "error":
@@ -498,6 +468,9 @@ def stop(agent_name: Optional[str] = typer.Argument(None, help="Agent name to st
     async def _stop():
         try:
             if agent_name:
+                # Validate agent exists before stopping
+                if not await validate_agent_exists(agent_name, daemon_client):
+                    return
                 result = await daemon_client.stop_agent(agent_name)
             else:
                 result = await daemon_client.stop_all_agents()
@@ -526,6 +499,13 @@ def send(
 
     async def _send():
         try:
+            # Validate both agents exist
+            if not await validate_agent_exists(from_agent, daemon_client):
+                return
+                
+            if not await validate_agent_exists(to_agent, daemon_client):
+                return
+
             console.print(
                 f"📤 [yellow]Sending message from {from_agent} to {to_agent}...[/yellow]"
             )
@@ -536,6 +516,12 @@ def send(
 
             if result.get("status") == "error":
                 console.print(f"❌ [red]Error:[/red] {result['message']}")
+            elif result.get("status") == "sent":
+                console.print(
+                    f"📤 [green]Message sent from {from_agent} to {to_agent}[/green]"
+                )
+                if result.get("note"):
+                    console.print(f"💡 [dim]{result['note']}[/dim]")
             elif result.get("status") == "timeout":
                 console.print(
                     "⏱️ [yellow]Message sent but agent response timed out[/yellow]"
@@ -584,6 +570,10 @@ def queues(
 
     async def _queues():
         try:
+            # Validate agent exists if specific agent requested
+            if agent_name and not await validate_agent_exists(agent_name, daemon_client):
+                return
+                
             if follow:
                 # Follow mode - continuously show new messages
                 console.print(
@@ -1209,12 +1199,12 @@ async def _create_agent_with_progress(
         await asyncio.sleep(0.4)  # Simulate work
         progress.update(task4, completed=True, description="✅ Set up agent memory")
 
-        # Step 5: Deploy agent
-        task5 = progress.add_task("🚀 Deploying agent to daemon...", total=None)
-        await asyncio.sleep(0.6)  # Simulate work
-        await _deploy_agent_to_daemon(config["name"], agent_config)
+        # Step 5: Save agent config
+        task5 = progress.add_task("💾 Saving agent configuration...", total=None)
+        await asyncio.sleep(0.4)  # Simulate work
+        await _save_agent_config(config["name"], agent_config)
         progress.update(
-            task5, completed=True, description="✅ Agent deployed and ready!"
+            task5, completed=True, description="✅ Agent configuration saved!"
         )
 
 
@@ -1334,34 +1324,11 @@ def _get_response_style_text(style: str) -> str:
     return styles.get(style, styles["balanced"])
 
 
-async def _deploy_agent_to_daemon(agent_name: str, agent_config: dict):
-    """Deploy agent configuration to daemon"""
+async def _save_agent_config(agent_name: str, agent_config: dict):
+    """Save agent configuration (no auto-deployment)"""
     import yaml
 
-    # Create workflow spec that the existing system can use
-    # The daemon expects: workflow["spec"]["agents"] where agents is an array
-    workflow_spec = {
-        "spec": {
-            "agents": [
-                {
-                    "name": agent_name,
-                    "template": agent_config["type"],  # Use template name directly
-                    "model": agent_config["model"],
-                    "tools": agent_config["tools"],
-                    "temperature": 0.1
-                    if agent_config["customization"].get("response_style") == "thorough"
-                    else 0.2,
-                }
-            ]
-        }
-    }
-
-    # Create workflow file in current directory
-    spec_path = Path.cwd() / f"{agent_name}_workflow.spec"
-    with open(spec_path, "w") as f:
-        yaml.dump(workflow_spec, f, default_flow_style=False)
-
-    # Also save the full configuration for future use
+    # Save agent configuration for future use
     config_dir = Path.home() / ".ago" / "agents"
     config_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1369,21 +1336,7 @@ async def _deploy_agent_to_daemon(agent_name: str, agent_config: dict):
     with open(config_path, "w") as f:
         yaml.dump(agent_config, f, default_flow_style=False)
 
-    # Now actually load the workflow into the daemon
-    try:
-        result = await daemon_client.load_workflow(str(spec_path.absolute()))
-        if result.get("status") == "error":
-            console.print(
-                f"⚠️ [yellow]Warning: Could not auto-load agent into daemon: {result.get('message')}[/yellow]"
-            )
-            console.print(
-                f"💡 [cyan]You can manually run: ago run {spec_path.name}[/cyan]"
-            )
-    except Exception as e:
-        console.print(
-            f"⚠️ [yellow]Warning: Could not auto-load agent into daemon: {str(e)}[/yellow]"
-        )
-        console.print(f"💡 [cyan]You can manually run: ago run {spec_path.name}[/cyan]")
+    return config_path
 
 
 def _show_success_message(agent_name: str):
@@ -1392,12 +1345,10 @@ def _show_success_message(agent_name: str):
     console.print("🎉 [bold green]Success! Your agent is ready to go![/bold green]")
     console.print()
 
-    # Show file locations
-    spec_file = f"{agent_name}_workflow.spec"
+    # Show file location
     config_file = f"~/.ago/agents/{agent_name}.yaml"
 
     console.print("📁 [yellow]Files created:[/yellow]")
-    console.print(f"  • Workflow spec: [cyan]{spec_file}[/cyan] (in current directory)")
     console.print(f"  • Agent config: [cyan]{config_file}[/cyan]")
     console.print()
 
@@ -1407,8 +1358,8 @@ def _show_success_message(agent_name: str):
     table.add_column("Command", style="cyan", width=40)
 
     table.add_row(
-        "🚀 Run your agent (auto-loads to daemon)",
-        f"[bold]ago run {spec_file}[/bold]",
+        "🚀 Run your agent (like docker run)",
+        f"[bold]ago run {agent_name}[/bold]",
     )
     table.add_row(
         "💬 Chat with your agent (after running)",
@@ -1514,6 +1465,94 @@ def pull(
             console.print(f"❌ [red]Error:[/red] {str(e)}")
 
     _pull()
+
+
+@app.command()
+def rm(
+    template_name: str = typer.Argument(
+        ..., help="Template name to remove (format: template or template:version)"
+    ),
+    all_versions: bool = typer.Option(
+        False, "--all", "-a", help="Remove all versions of the template"
+    ),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Force removal without confirmation"
+    ),
+):
+    """🗑️ Remove template from local registry (like 'docker rmi')"""
+    
+    def _rm():
+        try:
+            # Validate template name format
+            if not template_name or not template_name.strip():
+                console.print("❌ [red]Template name cannot be empty[/red]")
+                return
+            
+            # Parse template name and version
+            if ":" in template_name:
+                name, version = template_name.split(":", 1)
+                if not version.strip():
+                    console.print("❌ [red]Version cannot be empty after ':'[/red]")
+                    return
+            else:
+                name = template_name
+                version = "latest" if not all_versions else None
+            
+            name = name.strip()
+            if not name:
+                console.print("❌ [red]Template name cannot be empty[/red]")
+                return
+            
+            # Check if template exists
+            if not all_versions:
+                if not registry.template_exists(name, version):
+                    console.print(f"❌ [red]Template not found:[/red] {name}:{version}")
+                    # Show available templates
+                    available_templates = registry.list_templates()
+                    matching_names = [t["name"] for t in available_templates if name.lower() in t["name"].lower()]
+                    if matching_names:
+                        console.print(f"💡 [yellow]Did you mean:[/yellow] {', '.join(set(matching_names))}")
+                    return
+            
+            # Get template info for confirmation
+            if all_versions:
+                templates = [t for t in registry.list_templates() if t["name"] == name]
+                if not templates:
+                    console.print(f"❌ [red]Template not found:[/red] {name}")
+                    return
+                version_count = len(set(t['version'] for t in templates))
+                version_str = f"all versions ({version_count} version{'s' if version_count != 1 else ''})"
+            else:
+                version_str = version
+            
+            # Warning for builtin templates
+            templates = [t for t in registry.list_templates() if t["name"] == name]
+            builtin_templates = [t for t in templates if t.get("source") == "builtin"]
+            if builtin_templates and (all_versions or any(t.get("version") == version for t in builtin_templates)):
+                console.print("⚠️ [yellow]Warning: You are about to remove builtin template(s)[/yellow]")
+            
+            # Confirmation prompt
+            if not force:
+                confirm_msg = f"Remove template {name}:{version_str}?"
+                if not Confirm.ask(confirm_msg, default=False):
+                    console.print("❌ [yellow]Removal cancelled[/yellow]")
+                    return
+            
+            # Remove template(s)
+            success = registry.remove_template(name, version if not all_versions else None)
+            
+            if success:
+                console.print(f"✅ [green]Removed template:[/green] {name}:{version_str}")
+            else:
+                console.print(f"❌ [red]Failed to remove template:[/red] {name}:{version_str}")
+                console.print("💡 [yellow]Tip:[/yellow] Use --force to skip confirmation or check if template exists")
+                
+        except ValueError as e:
+            console.print(f"❌ [red]Invalid template name format:[/red] {str(e)}")
+        except Exception as e:
+            console.print(f"❌ [red]Error:[/red] {str(e)}")
+    
+    _rm()
 
 
 @app.command()
@@ -1728,6 +1767,79 @@ def config_get(
         console.print(f"❌ [red]Error getting config:[/red] {str(e)}")
 
 
+@config_app.command("view")
+def config_view():
+    """Display entire configuration in terminal"""
+    try:
+        full_config = config.get_config()
+        console.print("🔧 [blue]Complete Configuration:[/blue]\n")
+        console.print(yaml.dump(full_config, default_flow_style=False))
+    except Exception as e:
+        console.print(f"❌ [red]Error displaying config:[/red] {str(e)}")
+
+
+@config_app.command("edit")
+def config_edit(
+    local: bool = typer.Option(False, "--local", help="Edit project config instead of global")
+):
+    """Open configuration file in editor"""
+    try:
+        # Determine which config file to edit
+        if local:
+            if not config.project_config_file or not config.project_config_file.exists():
+                console.print("❌ [red]No project config found. Use 'ago config init --local' first.[/red]")
+                return
+            config_file = config.project_config_file
+            config_type = "project"
+        else:
+            config_file = config.global_config_file
+            config_type = "global"
+            
+        # Ensure config file exists
+        if not config_file.exists():
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            config_file.write_text("# Ago Configuration\n\n")
+            
+        # Get editor command
+        editor = _get_default_editor()
+        
+        console.print(f"📝 [blue]Opening {config_type} config in editor:[/blue] {config_file}")
+        console.print(f"🔧 [dim]Editor: {editor}[/dim]")
+        
+        # Execute editor command
+        if platform.system() == "Darwin" and editor.startswith("open"):
+            # macOS: open -t filename
+            subprocess.run([editor.split()[0], editor.split()[1], str(config_file)], check=True)
+        else:
+            # Linux/Windows: editor filename  
+            subprocess.run([editor, str(config_file)], check=True)
+            
+        console.print("✅ [green]Config file closed. Changes will take effect immediately.[/green]")
+        
+    except subprocess.CalledProcessError:
+        console.print(f"❌ [red]Failed to open editor: {editor}[/red]")
+        console.print(f"💡 [yellow]Try setting EDITOR environment variable or editing manually: {config_file}[/yellow]")
+    except Exception as e:
+        console.print(f"❌ [red]Error opening config:[/red] {str(e)}")
+
+
+def _get_default_editor() -> str:
+    """Get default editor for the current platform"""
+    # Try environment variables first
+    editor = os.environ.get('EDITOR') or os.environ.get('VISUAL')
+    if editor:
+        return editor
+    
+    # Platform-specific defaults
+    system = platform.system()
+    if system == "Darwin":  # macOS
+        return "open -t"
+    elif system == "Windows":
+        return "notepad"
+    else:  # Linux/Unix
+        return "nano"  # Most user-friendly for beginners
+
+
 @config_app.command("list")
 def config_list(
     global_only: bool = typer.Option(False, "--global", help="Show only global config"),
@@ -1920,6 +2032,10 @@ def registry_remove(
 
     except Exception as e:
         console.print(f"❌ [red]Error removing registry:[/red] {str(e)}")
+
+
+# Register MCP commands
+register_mcp_commands(app)
 
 
 if __name__ == "__main__":

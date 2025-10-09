@@ -282,10 +282,13 @@ class ProcessManager:
                     f"Message sent to {instance_id}, waiting for response..."
                 )
 
-                # Read response with timeout (shorter for send commands)
-                timeout_duration = (
-                    15.0 if command == "send_inter_agent_message" else 30.0
-                )
+                # Read response with timeout (shorter for send commands, longer for chat with tools)
+                if command == "send_inter_agent_message":
+                    timeout_duration = 15.0
+                elif command == "process_chat_message":
+                    timeout_duration = 60.0  # Longer timeout for ReAct flows with multiple tool calls
+                else:
+                    timeout_duration = 30.0
                 try:
                     # Read response with length prefixing
                     length_bytes = await asyncio.wait_for(
@@ -452,29 +455,57 @@ class ProcessManager:
     async def send_inter_agent_message(
         self, from_agent: str, to_agent: str, message: str
     ) -> Dict[str, Any]:
-        """Send message between agent processes"""
-        # 1. FIRST: Log outgoing message to sender's conversation history
-        # This ensures the sender remembers what they "said" BEFORE any responses
-        sender_response = await self.send_ipc_message(
-            from_agent,
-            "log_outgoing_message",
-            {"to_agent": to_agent, "message": message},
-        )
-
-        # Log if sender logging failed (but don't fail the main operation)
-        if sender_response.get("status") != "success":
-            self.logger.warning(
-                f"Failed to log outgoing message for sender {from_agent}: {sender_response.get('message')}"
+        """Send message between agent processes (fire-and-forget for better performance)"""
+        try:
+            # Fire-and-forget: Start message delivery in background task
+            # This prevents blocking on agent LLM processing time (which can take 15-30+ seconds)
+            asyncio.create_task(
+                self._deliver_inter_agent_message(from_agent, to_agent, message)
             )
 
-        # 2. THEN: Send message to receiving agent
-        response = await self.send_ipc_message(
-            to_agent,
-            "send_inter_agent_message",
-            {"from_agent": from_agent, "message": message},
-        )
+            return {
+                "status": "sent",
+                "message": f"Message sent from {from_agent} to {to_agent}",
+                "note": "Agent response will appear in message queues. Use 'ago queues --follow' to monitor."
+            }
 
-        return response
+        except Exception as e:
+            self.logger.error(f"Error starting inter-agent message delivery: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def _deliver_inter_agent_message(
+        self, from_agent: str, to_agent: str, message: str
+    ) -> None:
+        """Internal method to deliver inter-agent message (runs in background)"""
+        try:
+            # 1. FIRST: Log outgoing message to sender's conversation history
+            # This ensures the sender remembers what they "said" BEFORE any responses
+            sender_response = await self.send_ipc_message(
+                from_agent,
+                "log_outgoing_message", 
+                {"to_agent": to_agent, "message": message},
+            )
+
+            # Log if sender logging failed (but don't fail the main operation)
+            if sender_response.get("status") != "success":
+                self.logger.warning(
+                    f"Failed to log outgoing message for sender {from_agent}: {sender_response.get('message')}"
+                )
+
+            # 2. THEN: Send message to receiving agent (this may take time for LLM processing)
+            response = await self.send_ipc_message(
+                to_agent,
+                "send_inter_agent_message",
+                {"from_agent": from_agent, "message": message},
+            )
+
+            if response.get("status") == "success":
+                self.logger.info(f"Inter-agent message delivered: {from_agent} → {to_agent}")
+            else:
+                self.logger.error(f"Inter-agent message failed: {from_agent} → {to_agent}: {response.get('message')}")
+
+        except Exception as e:
+            self.logger.error(f"Error in background inter-agent message delivery: {e}")
 
     async def test_agent_ping(self, agent_name: str) -> Dict[str, Any]:
         """Test basic IPC communication with an agent"""

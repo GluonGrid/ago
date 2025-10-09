@@ -272,22 +272,9 @@ class AgentProcess:
 
             # Get assistant response
             assistant_response = self.shared_store.get("assistant_response", "")
-
-            # Update conversation history
-            self.shared_store["conversation_history"].append(
-                {
-                    "role": "user",
-                    "content": user_message,
-                    "timestamp": datetime.now().isoformat(),
-                }
-            )
-            self.shared_store["conversation_history"].append(
-                {
-                    "role": "assistant",
-                    "content": assistant_response,
-                    "timestamp": datetime.now().isoformat(),
-                }
-            )
+            
+            # Note: Conversation history is managed by the ReAct flow itself
+            # when it completes with a "final" action
 
             return {
                 "status": "success",

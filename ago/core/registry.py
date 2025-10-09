@@ -45,8 +45,8 @@ class AgentRegistry:
         self.templates_dir.mkdir(exist_ok=True)
         self.cache_dir.mkdir(exist_ok=True)
 
-        # Initialize with built-in templates
-        self._initialize_builtin_templates()
+        # Initialize registry (builtin templates should be pulled from official repo, not hardcoded)
+        # self._initialize_builtin_templates() # TODO: Remove this and pull from official ago repo
 
     def _initialize_builtin_templates(self):
         """Initialize registry with built-in templates from ago/templates/"""
@@ -300,13 +300,130 @@ prompt: |
         except Exception as e:
             console.print(f"❌ Error saving registry index: {e}")
 
-    def list_templates(self) -> List[Dict[str, Any]]:
-        """List all available templates (registry + local auto-discovery)"""
-        templates = []
+    def _add_template_to_index(self, template_data: Dict[str, Any], template_file_path: Path, source: str, registry_name: str = None):
+        """Add template to index for fast lookup"""
+        try:
+            index = self._load_index()
+            
+            template_key = f"{template_data['name']}:v{template_data.get('version', '1.0')}"
+            
+            # Add to index with metadata
+            index[template_key] = {
+                "name": template_data["name"],
+                "version": template_data.get("version", "1.0"),
+                "description": template_data.get("description", "Template"),
+                "model": template_data.get("model", "claude-3-5-haiku-20241022"),
+                "tools": template_data.get("tools", []),
+                "created_at": datetime.now().isoformat(),
+                "source": source,
+                "registry": registry_name,
+                "path": str(template_file_path.parent),
+                "agt_file": str(template_file_path),
+            }
+            
+            self._save_index(index)
+            
+        except Exception as e:
+            console.print(f"⚠️ Warning: Could not add template to index: {e}")
 
-        # 1. Registry templates
+    def _load_and_validate_index(self) -> Dict[str, Any]:
+        """Load index and rebuild if missing or corrupted"""
         index = self._load_index()
+        
+        # If index is empty or missing, rebuild it
+        if not index:
+            console.print("🔄 [dim]Rebuilding template index...[/dim]")
+            index = self._rebuild_index()
+        else:
+            # Validate that indexed templates actually exist
+            index = self._validate_and_clean_index(index)
+            
+        return index
+
+    def _rebuild_index(self) -> Dict[str, Any]:
+        """Rebuild index by scanning all template directories"""
+        index = {}
+        
+        # Scan builtin templates
+        builtin_dir = self.templates_dir / "builtin"
+        if builtin_dir.exists():
+            for agt_file in builtin_dir.glob("*.agt"):
+                try:
+                    with open(agt_file, "r") as f:
+                        template_data = yaml.safe_load(f)
+                    
+                    if template_data and template_data.get("name"):
+                        template_key = f"{template_data['name']}:v{template_data.get('version', '1.0')}"
+                        index[template_key] = {
+                            "name": template_data["name"],
+                            "version": template_data.get("version", "1.0"),
+                            "description": template_data.get("description", "Built-in template"),
+                            "model": template_data.get("model", "claude-3-5-haiku-20241022"),
+                            "tools": template_data.get("tools", []),
+                            "created_at": template_data.get("created_at", datetime.now().isoformat()),
+                            "source": "builtin",
+                            "path": str(agt_file.parent),
+                            "agt_file": str(agt_file),
+                        }
+                except Exception:
+                    continue
+        
+        # Scan pulled templates
+        pulled_dir = self.templates_dir / "pulled"
+        if pulled_dir.exists():
+            for agt_file in pulled_dir.glob("*.agt"):
+                try:
+                    with open(agt_file, "r") as f:
+                        template_data = yaml.safe_load(f)
+                    
+                    if template_data and template_data.get("name"):
+                        template_key = f"{template_data['name']}:v{template_data.get('version', '1.0')}"
+                        index[template_key] = {
+                            "name": template_data["name"],
+                            "version": template_data.get("version", "1.0"),
+                            "description": template_data.get("description", "Pulled template"),
+                            "model": template_data.get("model", "claude-3-5-haiku-20241022"),
+                            "tools": template_data.get("tools", []),
+                            "created_at": template_data.get("created_at", datetime.now().isoformat()),
+                            "source": "pulled",
+                            "path": str(agt_file.parent),
+                            "agt_file": str(agt_file),
+                        }
+                except Exception:
+                    continue
+        
+        # Save rebuilt index
+        self._save_index(index)
+        return index
+
+    def _validate_and_clean_index(self, index: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate index entries and remove stale entries"""
+        cleaned_index = {}
+        changed = False
+        
         for template_key, template_data in index.items():
+            agt_file = template_data.get("agt_file")
+            if agt_file and Path(agt_file).exists():
+                cleaned_index[template_key] = template_data
+            else:
+                # Template file no longer exists, remove from index
+                changed = True
+                console.print(f"🧹 [dim]Removing stale template from index: {template_key}[/dim]")
+        
+        # Save cleaned index if changes were made
+        if changed:
+            self._save_index(cleaned_index)
+        
+        return cleaned_index
+
+    def list_templates(self) -> List[Dict[str, Any]]:
+        """List all available templates using index as single source of truth"""
+        # Load index and validate it
+        index = self._load_and_validate_index()
+        
+        templates = []
+        for template_key, template_data in index.items():
+            source_icon = "🏠" if template_data.get('source') == 'builtin' else "🌐" if template_data.get('source') == 'pulled' else "📁"
             templates.append(
                 {
                     "key": template_key,
@@ -315,12 +432,12 @@ prompt: |
                     "description": template_data["description"],
                     "model": template_data["model"],
                     "tools": template_data["tools"],
-                    "source": f"🏠 {template_data.get('source', 'registry')}",
+                    "source": f"{source_icon} {template_data.get('source', 'unknown')}",
                     "created_at": template_data.get("created_at", "unknown"),
                 }
             )
 
-        # 2. Auto-discover local templates using config
+        # Add current directory templates (not indexed, always scan)
         local_templates = self._discover_local_templates()
         templates.extend(local_templates)
 
@@ -706,6 +823,9 @@ prompt: |
             with open(template_file_path, "w") as f:
                 f.write(content)
 
+            # Add template to index for fast lookup
+            self._add_template_to_index(template_data, template_file_path, "pulled", registry_config.name)
+
             console.print(
                 f"✅ [green]Template '{template_name}' pulled successfully to global cache[/green]"
             )
@@ -911,6 +1031,9 @@ prompt: |
             with open(template_file_path, "w") as f:
                 f.write(content)
 
+            # Add template to index for fast lookup
+            self._add_template_to_index(template_data, template_file_path, "pulled", registry_config.name)
+
             console.print(
                 f"✅ [green]Template '{template_name}' pulled successfully from GitLab[/green]"
             )
@@ -978,6 +1101,9 @@ prompt: |
             with open(template_file_path, "w") as f:
                 f.write(content)
 
+            # Add template to index for fast lookup
+            self._add_template_to_index(template_data, template_file_path, "pulled", registry_config.name)
+
             console.print(
                 f"✅ [green]Template '{template_name}' downloaded successfully[/green]"
             )
@@ -1019,6 +1145,60 @@ prompt: |
 
         except Exception as e:
             console.print(f"❌ Error creating template: {e}")
+            return False
+
+    def remove_template(self, name: str, version: Optional[str] = None) -> bool:
+        """Remove template(s) from local registry
+        
+        Args:
+            name: Template name
+            version: Specific version to remove, or None to remove all versions
+        
+        Returns:
+            bool: True if removal successful, False otherwise
+        """
+        try:
+            index = self._load_index()
+            removed_count = 0
+            templates_to_remove = []
+            
+            # Find templates to remove
+            for template_key, template_data in index.items():
+                template_name = template_data.get("name", "")
+                template_version = template_data.get("version", "latest")
+                
+                if template_name == name:
+                    if version is None:  # Remove all versions
+                        templates_to_remove.append((template_key, template_data))
+                    elif template_version == version:  # Remove specific version
+                        templates_to_remove.append((template_key, template_data))
+            
+            if not templates_to_remove:
+                return False
+            
+            # Remove templates from filesystem and index
+            for template_key, template_data in templates_to_remove:
+                # Remove from filesystem if it's a pulled template
+                if template_data.get("source") == "pulled":
+                    template_path = Path(template_data.get("path", ""))
+                    if template_path.exists():
+                        if template_path.is_file():
+                            template_path.unlink()
+                        elif template_path.is_dir():
+                            import shutil
+                            shutil.rmtree(template_path)
+                
+                # Remove from index
+                del index[template_key]
+                removed_count += 1
+            
+            # Save updated index
+            self._save_index(index)
+            
+            return removed_count > 0
+            
+        except Exception as e:
+            console.print(f"❌ [red]Error removing template:[/red] {e}")
             return False
 
 

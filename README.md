@@ -2,18 +2,23 @@
 
 *A minimalist CLI that creates specialized AI agents as easily as running Docker containers*
 
-## 🎯 Current Status: v1.3 UNIX MULTI-PROCESS! 🎉
+## 🎯 Current Status: v1.4 COMPLETE! Next: v1.5 TUI + Advanced Reasoning! 🚀
 
-**Ago v1.3** achieves true UNIX process isolation with horizontal scaling foundation!
+**Ago v1.4** completed the Docker-like experience with excellent performance and intuitive commands!
 
-**🚀 MAJOR BREAKTHROUGH (v1.3 UNIX MULTI-PROCESS):**
+**🎉 LATEST ACHIEVEMENT (v1.4 DOCKER-LIKE UX):**
 
-- 🎯 **True Process Isolation** - Each agent runs in separate process (no more single-process bottleneck!)
-- 🔗 **Unix Socket IPC** - Replaced in-memory communication with robust inter-process communication
-- 🏷️ **Unique Instance IDs** - `researcher-abc12345`, `helper-def67890` prevent name collisions
-- 📈 **Horizontal Scaling Ready** - Multiple instances of same agent type can run simultaneously
-- 🛡️ **Robust Process Management** - Health checks, graceful shutdown, orphan cleanup, crash isolation
-- 🧹 **No More Orphaned Processes** - Proper lifecycle management prevents resource leaks
+- 🐳 **Complete Docker-Style Interface** - `ago run researcher`, `ago up workflow.spec`, `ago ps`, `ago stop`
+- ⚡ **Performance Optimized** - Fire-and-forget messaging, background processing, instant responses
+- 🎯 **Agent Name Resolution** - Use simple names (`ago chat researcher`) instead of instance IDs
+- 🏗️ **Production Ready** - True process isolation, robust error handling, comprehensive logging
+
+**🚀 COMING NEXT (v1.5 TUI + ADVANCED REASONING):**
+
+- 🖥️ **Toad-Inspired TUI** - Professional terminal interface with split-screen chat and live agent reasoning
+- 🧠 **Specialized Reasoning Agents** - planner.agt, socratic.agt, tree-of-thought.agt for enhanced problem-solving
+- 🌐 **WebSocket Foundation** - Modern communication for distributed agents and real-time UI updates
+- 📊 **Dashboard Command** - Comprehensive system monitoring with interactive agent management
 
 **✅ Previous Features (v1.2 + v1.1):**
 
@@ -26,6 +31,20 @@
 - ✅ **ReAct Intelligence** - Full reasoning cycle with tool usage and memory
 
 ---
+
+## 📦 **Template System Architecture**
+
+**Template Discovery Hierarchy:**
+- **Current Working Directory** (`./`) - User's custom templates for project-specific agents
+- **Global Builtin** (`~/.ago/registry/templates/builtin/`) - Official templates from ago repository
+- **Global Pulled** (`~/.ago/registry/templates/pulled/`) - Templates pulled from remote registries
+
+**Template Sources:**
+- 🏠 **Builtin**: Official templates pulled from ago GitHub repository (not hardcoded)
+- 🌐 **Pulled**: Templates downloaded from any configured registry (GitHub, GitLab, HTTP)
+- 📁 **Local**: Custom `.agt` files in current working directory
+
+All templates are discovered automatically and work seamlessly in `ago templates`, `ago run`, and `ago up` commands.
 
 ## 🌟 **Magic Create Experience**
 
@@ -53,20 +72,23 @@ Each optimized with custom prompts and tools:
 - ✍️ **Writer** - Content creation and documentation specialist
 - 🎯 **Coordinator** - Project management and task orchestration
 
-### **Complete Workflow: Creation to Conversation in 60 seconds** ⚡
+### **Complete Docker-like Workflow: Creation to Conversation in 30 seconds** ⚡
 
 ```bash
-# 1. Create agent (10 seconds)
+# 1. Create agent config (like docker build) - 5 seconds
 uv run ago create assistant --name Helper --quick
 
-# 2. Agent auto-loads and runs (5 seconds)
-uv run ago run Helper_workflow.spec
+# 2. Run agent from template (like docker run) - 5 seconds  
+uv run ago run assistant --name my-helper
 
-# 3. Start chatting immediately
-uv run ago chat Helper
+# 3. Start chatting immediately with simple names
+uv run ago chat my-helper
 > "Help me organize my project tasks"
 
-# 4. Check all running agents
+# 4. Multi-agent communication (fire-and-forget)
+uv run ago send my-helper researcher "Research project management tools"
+
+# 5. Check all running agents 
 uv run ago ps
 # 📊 Beautiful table showing all agents with status and tools
 ```
@@ -78,29 +100,26 @@ uv run ago ps
 ### **All Commands Working** ✅
 
 ```bash
-# Core Docker-style Commands
-uv run ago create [type] [--options]    # 🌟 Magic agent creation wizard
-uv run ago run workflow.spec            # Start agents from workflow file
-uv run ago run template_name agent_name # Run template directly (like docker run)
-uv run ago ps                           # List running agents (like docker ps)
-uv run ago chat agent_name              # Interactive chat (like docker exec -it)
-uv run ago logs agent_name              # View conversation history (like docker logs)
-uv run ago stop [agent_name]            # Stop specific agent or all agents
+# Core Docker-style Commands ✅ COMPLETED v1.4
+uv run ago create [type] [--options]       # 🌟 Create agent config only (like docker build)
+uv run ago run template_name [--name X]    # Run agent from template (like docker run nginx)
+uv run ago ps                              # List running agents (like docker ps)
+uv run ago chat agent_name                 # Interactive chat with simple names ✅
+uv run ago logs agent_name                 # View conversation history ✅
+uv run ago stop [agent_name]               # Stop specific agent or all agents ✅
 
-# Docker Registry Pattern
-uv run ago agents                       # List all templates (registry + local .agt files)
-uv run ago pull template_name           # Download/update template (like docker pull)
-uv run ago up [service]                 # Start workflow (like docker-compose up)
-uv run ago down                         # Stop workflow (like docker-compose down)
+# Multi-Agent Workflows ✅ COMPLETED v1.4  
+uv run ago up workflow.spec                # Start multi-agent workflow (like docker-compose up)
+uv run ago templates                       # List available templates (like docker images)
+uv run ago pull registry:template          # Download/update template (like docker pull)
 
-# Configuration Management
-uv run ago config set key value [--local]  # Set global or project config
-uv run ago config get [key] [--merged]     # Get config values
-uv run ago registry add name url           # Add template registry
+# Fast Inter-Agent Communication ✅ COMPLETED v1.4
+uv run ago send from_agent to_agent "msg"  # Fire-and-forget messaging (returns immediately)
+uv run ago queues [--follow]               # Monitor message queues and responses
 
-# Multi-Agent Communication
-uv run ago send from_agent to_agent "msg"  # Send inter-agent messages
-uv run ago queues [--follow]               # Show/monitor message queues
+# Registry Management ✅ COMPLETED v1.4
+uv run ago registry add name url --type X  # Add GitHub/GitLab/HTTP registries
+uv run ago registry list                   # Show configured registries
 
 # Daemon Management
 uv run ago daemon start/stop/status        # Daemon lifecycle management

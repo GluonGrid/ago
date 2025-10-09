@@ -12,9 +12,9 @@ import aiohttp
 import yaml
 
 # Import local modules
-from base_node import BaseAgentNode
-from mcp_integration import call_tool_async
-from tool_formatter import ToolFormatter
+from .base_node import BaseAgentNode
+from .mcp_integration import call_tool_async
+from .tool_formatter import ToolFormatter
 
 
 class LLMService:
