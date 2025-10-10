@@ -364,6 +364,103 @@ class ProcessManager:
             self.logger.error(f"Failed to send IPC message to {identifier}: {e}")
             return {"status": "error", "message": str(e)}
 
+    async def send_streaming_ipc_message(
+        self, identifier: str, command: str, args: Dict[str, Any]
+    ):
+        """Send IPC message to agent and yield streaming responses"""
+        try:
+            # Determine instance ID to send to (same as regular IPC)
+            instance_id = None
+            if identifier in self.agent_instances:
+                instance_id = identifier
+            elif identifier in self.agent_types and self.agent_types[identifier]:
+                instance_id = self.agent_types[identifier][0]
+            else:
+                yield {
+                    "status": "error",
+                    "message": f"Agent or instance {identifier} not found",
+                }
+                return
+
+            process_info = self.agent_instances[instance_id]
+            socket_path = process_info["socket_path"]
+
+            if not Path(socket_path).exists():
+                yield {
+                    "status": "error",
+                    "message": f"Instance {instance_id} socket not found",
+                }
+                return
+
+            self.logger.info(f"Starting streaming IPC to {identifier} -> {instance_id}")
+
+            try:
+                # Connect to agent process socket
+                reader, writer = await asyncio.open_unix_connection(socket_path)
+
+                # Send message with streaming flag
+                message = {"command": command, "args": args, "streaming": True}
+                message_packed = msgpack.packb(message)
+                length_prefix = len(message_packed).to_bytes(4, "big")
+                writer.write(length_prefix + message_packed)
+                await writer.drain()
+
+                self.logger.debug(f"Streaming message sent to {instance_id}, reading responses...")
+
+                # Read multiple streaming responses until completion
+                while True:
+                    try:
+                        # Read response with per-step timeout
+                        timeout_duration = 30.0  # Per-step timeout
+                        
+                        length_bytes = await asyncio.wait_for(
+                            reader.readexactly(4), timeout=timeout_duration
+                        )
+                        message_length = int.from_bytes(length_bytes, "big")
+
+                        response_data = await asyncio.wait_for(
+                            reader.readexactly(message_length), timeout=timeout_duration
+                        )
+                        
+                        if not response_data:
+                            self.logger.warning(f"Empty streaming response from {instance_id}")
+                            break
+
+                        response = msgpack.unpackb(response_data, raw=False)
+                        
+                        self.logger.debug(f"🔄 Streaming step from {instance_id}: {response.get('type', 'unknown')}")
+                        
+                        # Yield each streaming step
+                        yield response
+                        
+                        # Check if this is the final step
+                        if response.get("status") == "completed" or response.get("is_final", False):
+                            self.logger.info(f"✅ Streaming completed for {instance_id}")
+                            break
+                            
+                    except asyncio.TimeoutError:
+                        self.logger.warning(f"Streaming timeout for {instance_id} (step timeout)")
+                        yield {
+                            "status": "error",
+                            "message": f"Agent {instance_id} streaming timeout",
+                        }
+                        break
+
+            except Exception as e:
+                self.logger.error(f"Streaming IPC error for {instance_id}: {e}")
+                yield {"status": "error", "message": str(e)}
+
+            finally:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except:
+                    pass
+
+        except Exception as e:
+            self.logger.error(f"Streaming IPC setup error: {e}")
+            yield {"status": "error", "message": str(e)}
+
     async def get_agent_status(self, identifier: str) -> Dict[str, Any]:
         """Get status of an agent instance"""
         try:
@@ -435,6 +532,15 @@ class ProcessManager:
         return await self.send_ipc_message(
             agent_name, "process_chat_message", {"message": message}
         )
+    
+    async def process_chat_message_streaming(
+        self, agent_name: str, message: str
+    ):
+        """Send chat message to agent process with streaming responses"""
+        async for step in self.send_streaming_ipc_message(
+            agent_name, "process_chat_message", {"message": message}
+        ):
+            yield step
 
     async def get_agent_logs(self, agent_name: str, tail: int = 10) -> Dict[str, Any]:
         """Get agent conversation history"""

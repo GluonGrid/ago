@@ -110,12 +110,21 @@ class AgentProcess:
             raise
 
     async def _initialize_agent(self):
-        """Initialize the PocketFlow agent"""
+        """Initialize the PocketFlow agent with streaming capability"""
         try:
-            # Create PocketFlow agent with ReAct intelligence
-            self.agent_flow = create_agent_flow(
+            # Import both regular and streaming flow creators
+            from ...agents.agent_react_flow import create_agent_flow
+            from ...agents.streaming_react_wrapper import StreamingFlow
+            
+            # Create the original PocketFlow ReAct agent
+            original_flow = create_agent_flow(
                 self.agent_name, self.agent_spec, self.agent_template, self.agent_tools
             )
+            
+            # Wrap it with streaming capability
+            self.agent_flow = StreamingFlow(original_flow)
+            
+            self.logger.info(f"🔄 Agent {self.agent_name} initialized with streaming capability")
 
             # Create shared store for conversation state
             self.shared_store = {
@@ -171,7 +180,13 @@ class AgentProcess:
                 command = message.get("command", "unknown")
                 self.logger.info(f"Processing IPC command: {command}")
 
+                # Store writer for streaming use
+                self._current_writer = writer
+                
                 response = await self._process_ipc_command(message)
+                
+                # Clear writer after processing
+                self._current_writer = None
 
             except asyncio.IncompleteReadError as e:
                 self.logger.error(
@@ -234,7 +249,16 @@ class AgentProcess:
             }
 
         elif command == "process_chat_message":
-            return await self._process_chat_message(args.get("message", ""))
+            # Check if this is a streaming request
+            is_streaming = message.get("streaming", False)
+            if is_streaming:
+                # Handle streaming chat message
+                await self._process_chat_message_streaming(args.get("message", ""))
+                # Return completion status (after streaming)
+                return {"status": "completed"}
+            else:
+                # Handle regular chat message
+                return await self._process_chat_message(args.get("message", ""))
 
         elif command == "get_conversation_history":
             return {
@@ -260,31 +284,202 @@ class AgentProcess:
             return {"status": "error", "message": f"Unknown command: {command}"}
 
     async def _process_chat_message(self, user_message: str) -> Dict[str, Any]:
-        """Process chat message using PocketFlow agent"""
+        """Process chat message using streaming ReAct flow"""
         try:
-            self.logger.info(f"Processing chat message: {user_message}")
+            self.logger.info(f"Processing chat message with streaming: {user_message}")
 
             # Update shared store with user message
             self.shared_store["user_message"] = user_message
-
-            # Run PocketFlow agent (async)
-            await self.agent_flow.run_async(self.shared_store)
-
-            # Get assistant response
-            assistant_response = self.shared_store.get("assistant_response", "")
             
-            # Note: Conversation history is managed by the ReAct flow itself
-            # when it completes with a "final" action
-
-            return {
-                "status": "success",
-                "response": assistant_response,
-                "agent": self.agent_name,
-            }
+            # Check if we have streaming capability
+            if hasattr(self.agent_flow, 'run_with_streaming'):
+                # Use streaming version
+                async for step in self.agent_flow.run_with_streaming(self.shared_store):
+                    # Send each step immediately via IPC to daemon
+                    await self._send_stream_update(step)
+                    
+                    # Log streaming step for debugging  
+                    content = step.get('content', '')
+                    if isinstance(content, dict):
+                        content_str = str(content)[:100] + "..." if len(str(content)) > 100 else str(content)
+                    else:
+                        content_str = str(content)[:100] + "..." if len(str(content)) > 100 else str(content)
+                    self.logger.info(f"🔄 STREAM [{step['type']}]: {content_str}")
+                    
+                    if step.get('is_final', False):
+                        break
+                
+                # Get final assistant response
+                assistant_response = self.shared_store.get("assistant_response", "")
+                
+                return {
+                    "status": "success",
+                    "response": assistant_response,
+                    "agent": self.agent_name,
+                    "streaming": True
+                }
+            else:
+                # Fallback to regular flow execution
+                await self.agent_flow.run_async(self.shared_store)
+                assistant_response = self.shared_store.get("assistant_response", "")
+                
+                return {
+                    "status": "success", 
+                    "response": assistant_response,
+                    "agent": self.agent_name,
+                    "streaming": False
+                }
 
         except Exception as e:
             self.logger.error(f"Error processing chat message: {e}")
+            # Send error as stream update if possible
+            try:
+                await self._send_stream_update({
+                    "type": "error",
+                    "content": str(e),
+                    "is_final": True
+                })
+            except:
+                pass  # Ignore streaming errors during error handling
+            
             return {"status": "error", "message": str(e)}
+
+    async def _process_chat_message_streaming(self, user_message: str):
+        """Process chat message with streaming - sends each step via IPC"""
+        try:
+            self.logger.info(f"Processing streaming chat message: {user_message}")
+
+            # Update shared store with user message
+            self.shared_store["user_message"] = user_message
+            
+            # Check if we have streaming capability
+            if hasattr(self.agent_flow, 'run_with_streaming'):
+                # Stream each ReAct step back to daemon via IPC
+                async for step in self.agent_flow.run_with_streaming(self.shared_store):
+                    # Send step back via current IPC connection
+                    await self._send_step_via_ipc(step)
+                    
+                    # Log for debugging
+                    content = step.get('content', '')
+                    if isinstance(content, dict):
+                        content_str = str(content)[:100] + "..." if len(str(content)) > 100 else str(content)
+                    else:
+                        content_str = str(content)[:100] + "..." if len(str(content)) > 100 else str(content)
+                    self.logger.info(f"🔄 STREAMED [{step['type']}]: {content_str}")
+                    
+                    if step.get('is_final', False):
+                        break
+            else:
+                # Fallback to regular flow execution
+                await self.agent_flow.run_async(self.shared_store)
+                # Send final response as single step
+                assistant_response = self.shared_store.get("assistant_response", "")
+                await self._send_step_via_ipc({
+                    "type": "final",
+                    "content": assistant_response,
+                    "is_final": True,
+                    "agent": self.agent_name
+                })
+
+        except Exception as e:
+            self.logger.error(f"Error processing streaming chat message: {e}")
+            # Send error as final step
+            await self._send_step_via_ipc({
+                "type": "error",
+                "content": str(e),
+                "is_final": True
+            })
+
+    async def _send_step_via_ipc(self, step_data: Dict[str, Any]):
+        """Send streaming step back to daemon via current IPC connection"""
+        try:
+            # Send the step data as a response back through the current IPC connection
+            # The daemon's streaming handler will receive this
+            
+            # Add metadata
+            response = {
+                "status": "streaming",
+                "agent": self.agent_name,
+                "timestamp": datetime.now().isoformat(),
+                **step_data
+            }
+            
+            # Send via IPC (this will be received by daemon's streaming loop)
+            response_packed = msgpack.packb(response)
+            length_prefix = len(response_packed).to_bytes(4, "big")
+            
+            # We need access to the current writer from the IPC handler
+            # Store it in self for streaming use
+            if hasattr(self, '_current_writer') and self._current_writer:
+                self._current_writer.write(length_prefix + response_packed)
+                await self._current_writer.drain()
+            else:
+                self.logger.warning("No IPC writer available for streaming")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to send streaming step via IPC: {e}")
+
+    async def _send_stream_update(self, step_data: Dict[str, Any]):
+        """Send streaming update back to daemon via IPC"""
+        step_type = step_data.get("type", "unknown")
+        content = step_data.get("content", "")
+        is_final = step_data.get("is_final", False)
+        
+        # Format content for logging
+        if isinstance(content, dict):
+            content_str = str(content)
+        else:
+            content_str = str(content)
+        
+        self.logger.info(f"📡 STREAMING [{step_type}]: {content_str[:200]}{'...' if len(content_str) > 200 else ''}")
+        
+        if is_final:
+            self.logger.info("🏁 STREAMING: Final step completed")
+        
+        # Send streaming update to daemon via IPC
+        try:
+            await self._send_ipc_to_daemon("stream_update", step_data)
+            self.logger.debug(f"✅ Sent stream update to daemon: {step_type}")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to send stream update to daemon: {e}")
+            # Don't fail the entire process if streaming fails
+    
+    async def _send_ipc_to_daemon(self, command: str, data: Dict[str, Any]):
+        """Send IPC message back to daemon (reverse direction)"""
+        try:
+            # Connect to daemon's IPC socket 
+            daemon_socket_path = Path.home() / ".ago" / "daemon_stream.sock"
+            
+            if not daemon_socket_path.exists():
+                # Daemon doesn't have streaming socket yet
+                self.logger.debug("Daemon streaming socket not available")
+                return
+            
+            # Create message
+            message = {
+                "command": command,
+                "agent_name": self.agent_name,
+                "data": data,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Connect and send
+            reader, writer = await asyncio.open_unix_connection(str(daemon_socket_path))
+            
+            # Send message (using same msgpack protocol as daemon)
+            import msgpack
+            message_packed = msgpack.packb(message)
+            length_prefix = len(message_packed).to_bytes(4, "big")
+            writer.write(length_prefix + message_packed)
+            await writer.drain()
+            
+            # Close connection
+            writer.close()
+            await writer.wait_closed()
+            
+        except Exception as e:
+            self.logger.debug(f"IPC to daemon failed: {e}")
+            # Don't raise - streaming is best-effort
 
     async def _handle_inter_agent_message(
         self, from_agent: str, message: str

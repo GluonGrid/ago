@@ -193,13 +193,31 @@ class AgoDaemonV2:
                 return
 
             command = request.get("command")
-            response = await self._process_command(command, request.get("args", {}))
+            
+            # Handle streaming commands differently
+            if command == "chat_message_streaming":
+                # Process streaming command - returns async generator
+                stream = await self._process_command(command, request.get("args", {}))
+                
+                # Forward each streaming response
+                async for step in stream:
+                    step_packed = msgpack.packb(step)
+                    length_prefix = len(step_packed).to_bytes(4, "big")
+                    writer.write(length_prefix + step_packed)
+                    await writer.drain()
+                    
+                    # Stop after final step
+                    if step.get("status") == "completed" or step.get("is_final", False):
+                        break
+            else:
+                # Handle regular commands
+                response = await self._process_command(command, request.get("args", {}))
 
-            # Send response with length prefix
-            response_packed = msgpack.packb(response)
-            length_prefix = len(response_packed).to_bytes(4, "big")
-            writer.write(length_prefix + response_packed)
-            await writer.drain()
+                # Send response with length prefix
+                response_packed = msgpack.packb(response)
+                length_prefix = len(response_packed).to_bytes(4, "big")
+                writer.write(length_prefix + response_packed)
+                await writer.drain()
 
         except Exception as e:
             self.logger.error(f"Error handling client request: {e}")
@@ -238,6 +256,12 @@ class AgoDaemonV2:
 
         elif command == "chat_message":
             return await self.process_manager.process_chat_message(
+                args["agent_name"], args["message"]
+            )
+        
+        elif command == "chat_message_streaming":
+            # Return async generator for streaming
+            return self.process_manager.process_chat_message_streaming(
                 args["agent_name"], args["message"]
             )
 

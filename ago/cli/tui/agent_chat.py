@@ -4,6 +4,7 @@ Textual TUI for agent chat - inspired by Toad
 Provides professional, flicker-free terminal interface with dynamic message widgets
 """
 
+import re
 import sys
 from datetime import datetime
 
@@ -11,7 +12,7 @@ from rich.spinner import Spinner
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, VerticalScroll
-from textual.widgets import Input, Static
+from textual.widgets import Input, Static, TextArea
 
 # Import Ago components
 from ...core.daemon_client import DaemonClient
@@ -30,8 +31,8 @@ class SpinnerWidget(Static):
         self.update_timer = self.set_interval(1 / 60, self.refresh)
 
 
-class MessageWidget(Static):
-    """Individual message widget that can be styled and positioned independently"""
+class MessageWidget(Container):
+    """Individual message widget that can contain both text and code blocks"""
 
     def __init__(
         self,
@@ -65,23 +66,158 @@ class MessageWidget(Static):
         elif message_type == "tool_result":
             self.add_class("tool-result-message")
 
-    def render(self) -> str:
-        """Render the message with appropriate styling"""
+    def compose(self) -> ComposeResult:
+        """Compose the message with text and code blocks"""
+        if self.message_type == "agent":
+            # Parse and create content with code blocks
+            segments = self._parse_code_blocks(self.content)
+
+            for segment in segments:
+                if segment["type"] == "text" and segment["content"].strip():
+                    # Regular text content
+                    yield Static(segment["content"])
+                elif segment["type"] == "code":
+                    # Code block with syntax highlighting
+                    lang_label = (
+                        segment["language"].upper()
+                        if segment["language"] != "text"
+                        else "CODE"
+                    )
+
+                    # Add syntax-highlighted code
+                    try:
+                        # Map common language names to Textual's built-in languages
+                        # Based on BUILTIN_LANGUAGES: python, markdown, json, toml, yaml,
+                        # html, css, javascript, rust, go, regex, sql, java, bash, xml
+                        language_map = {
+                            "python": "python",
+                            "py": "python",
+                            "javascript": "javascript",
+                            "js": "javascript",
+                            "bash": "bash",
+                            "sh": "bash",
+                            "shell": "bash",
+                            "json": "json",
+                            "yaml": "yaml",
+                            "yml": "yaml",
+                            "toml": "toml",
+                            "html": "html",
+                            "css": "css",
+                            "sql": "sql",
+                            "xml": "xml",
+                            "markdown": "markdown",
+                            "md": "markdown",
+                            "rust": "rust",
+                            "go": "go",
+                            "java": "java",
+                            "regex": "regex",
+                            "regexp": "regex",
+                            # Unsupported languages - fallback to similar or None
+                            "typescript": "javascript",  # Fallback to JavaScript
+                            "ts": "javascript",
+                            "c": None,  # Not supported
+                            "cpp": None,
+                            "c++": None,
+                            "csharp": None,
+                            "c#": None,
+                            "php": None,
+                            "ruby": None,
+                            "swift": None,
+                            "kotlin": "java",  # Fallback to Java (similar syntax)
+                            "scala": "java",
+                            "dockerfile": None,
+                            "text": None,  # No highlighting for plain text
+                        }
+
+                        # Get the mapped language or use the original
+                        mapped_language = language_map.get(
+                            segment["language"].lower(), segment["language"]
+                        )
+
+                        # Use code_editor for all languages, with language=None for unsupported ones
+                        if mapped_language and mapped_language in [
+                            "python",
+                            "markdown",
+                            "json",
+                            "toml",
+                            "yaml",
+                            "html",
+                            "css",
+                            "javascript",
+                            "rust",
+                            "go",
+                            "regex",
+                            "sql",
+                            "java",
+                            "bash",
+                            "xml",
+                        ]:
+                            # Supported language - use syntax highlighting
+                            language_param = mapped_language
+                        else:
+                            # Unsupported language - use code_editor appearance without highlighting
+                            language_param = None
+
+                        code_area = TextArea.code_editor(
+                            segment["content"],
+                            language=language_param,
+                            read_only=True,
+                            show_line_numbers=False,
+                        )
+                        # Make it compact
+                        code_area.styles.height = "auto"
+                        code_area.styles.max_height = 20  # Limit height
+                        yield code_area
+                    except Exception as e:
+                        # Debug: Print what language failed
+                        print(f"TextArea language '{segment['language']}' failed: {e}")
+                        # Fallback to simple text display
+                        yield Static(f"[on #2d3748]{segment['content']}[/on #2d3748]")
+
+        else:
+            # For non-agent messages, use simple text display
+            yield Static(self._render_simple_message())
+
+    def _parse_code_blocks(self, text: str) -> list:
+        """Parse text to extract code blocks and regular text segments"""
+        # Pattern to match code blocks: ```language\ncode\n``` or ```\ncode\n```
+        pattern = r"```(?:(\w+))?(?:\r?\n)?(.*?)(?:\r?\n)?```"
+
+        segments = []
+        last_end = 0
+
+        for match in re.finditer(pattern, text, re.DOTALL):
+            # Add text before code block
+            if match.start() > last_end:
+                segments.append(
+                    {"type": "text", "content": text[last_end : match.start()]}
+                )
+
+            # Add code block
+            language = (
+                match.group(1) or "text"
+            )  # Default to 'text' if no language specified
+            code = match.group(2).strip()
+
+            segments.append({"type": "code", "language": language, "content": code})
+
+            last_end = match.end()
+
+        # Add remaining text after last code block
+        if last_end < len(text):
+            segments.append({"type": "text", "content": text[last_end:]})
+
+        return segments
+
+    def _render_simple_message(self) -> str:
+        """Render non-agent messages using the original logic"""
         lines = []
 
         if self.message_type == "user":
             # User message - blue theme with background highlight
-
             # Content without text-based borders (CSS handles borders)
             for line in self.content.split("\n"):
                 lines.append(f"[on #414559]{line}[/on #414559]")
-
-        elif self.message_type == "agent":
-            # Agent message - green theme
-
-            # Content without text-based borders (CSS handles borders)
-            for line in self.content.split("\n"):
-                lines.append(line)
 
         elif self.message_type == "system":
             # System message - gray theme
@@ -96,22 +232,18 @@ class MessageWidget(Static):
         elif self.message_type == "success":
             # Success message - green theme
             lines.append(f"[#a6d189]✓ {self.content}[/#a6d189]")
-            
+
         elif self.message_type == "thought":
-            # Agent thought - yellow/orange theme  
-            lines.append(f"[#e5c890]💭 Thinking:[/#e5c890]")
+            # Agent thought - yellow/orange theme
+            lines.append("[#e5c890]💭 Thought:[/#e5c890]")
             for line in self.content.split("\n"):
                 lines.append(f"[dim]{line}[/dim]")
-                
+
         elif self.message_type == "tool_use":
             # Tool usage - purple theme
-            lines.append(f"[#c886f7]🔧 Using tool:[/#c886f7] [bold]{self.content}[/bold]")
-            
-        elif self.message_type == "tool_result":
-            # Tool result - blue theme
-            lines.append(f"[#8caaee]⚙️ Result:[/#8caaee]")
-            for line in self.content.split("\n"):
-                lines.append(f"[dim]{line}[/dim]")
+            lines.append(
+                f"[#c886f7]🔧 Using tool:[/#c886f7] [bold]{self.content}[/bold]"
+            )
 
         return "\n".join(lines)
 
@@ -275,50 +407,58 @@ class AgoChatApp(App):
 
         # Auto-scroll to bottom to show new message
         messages_container.scroll_end(animate=True)
-    
-    async def parse_and_display_react_steps(self, response: dict, agent_display_name: str) -> str:
+
+    async def parse_and_display_react_steps(
+        self, response: dict, agent_display_name: str
+    ) -> str:
         """Parse the daemon response and display ReAct reasoning steps"""
-        
+
         # Get the scratchpad from response if available
         scratchpad = response.get("scratchpad", "")
         agent_response = response.get("response", "No response received")
-        
+
         if not scratchpad:
             # No scratchpad available, just return the response
             return agent_response
-            
+
         # Parse scratchpad for ReAct steps
-        lines = scratchpad.split('\n')
+        lines = scratchpad.split("\n")
         current_thought = ""
         current_tool_use = ""
-        
+
         for line in lines:
             line = line.strip()
-            
+
             if line.startswith("THOUGHT:"):
                 if current_thought:
                     # Display previous thought
-                    await self.add_message(current_thought, agent_display_name, "thought")
+                    await self.add_message(
+                        current_thought, agent_display_name, "thought"
+                    )
                 current_thought = line[8:].strip()  # Remove "THOUGHT: "
-                
+
             elif line.startswith("OBSERVATION:"):
                 # Skip observations as they're displayed with tool results
                 continue
-                
+
             elif line.startswith("ACTION:"):
                 if current_thought:
                     # Display the thought before the action
-                    await self.add_message(current_thought, agent_display_name, "thought")
+                    await self.add_message(
+                        current_thought, agent_display_name, "thought"
+                    )
                     current_thought = ""
-                    
+
                 # Extract tool name from action line
                 action_text = line[7:].strip()  # Remove "ACTION: "
                 if "use_tool" in action_text:
                     tool_name = action_text.replace("use_tool", "").strip()
                     current_tool_use = tool_name
                     if tool_name:
-                        await self.add_message(tool_name, agent_display_name, "tool_use")
-                        
+                        await self.add_message(
+                            tool_name, agent_display_name, "tool_use"
+                        )
+
             elif line.startswith("TOOL_RESULT:"):
                 # Display tool result
                 result_text = line[12:].strip()  # Remove "TOOL_RESULT: "
@@ -328,13 +468,13 @@ class AgoChatApp(App):
                     end = result_text.rfind("'")
                     if start < end:
                         result_text = result_text[start:end]
-                        
+
                 await self.add_message(result_text, agent_display_name, "tool_result")
-        
+
         # Display any remaining thought
         if current_thought:
             await self.add_message(current_thought, agent_display_name, "thought")
-            
+
         return agent_response
 
     async def on_mount(self) -> None:
@@ -431,29 +571,83 @@ class AgoChatApp(App):
         status_text.update("[#e5c890]Thinking...[/#e5c890]")
 
         try:
-            response = await self.daemon_client.chat_message(self.agent_name, message)
+            agent_display_name = (
+                self.agent_name.split("-")[0]
+                if "-" in self.agent_name
+                else self.agent_name
+            )
 
-            if response.get("status") == "error":
-                error_msg = response.get("message", "Unknown error")
-                await self.add_message(f"Error: {error_msg}", "System", "error")
-                spinner.display = False
-                status_text.update("[#e78284]❌ Error[/#e78284]")
-            else:
-                agent_display_name = (
-                    self.agent_name.split("-")[0]
-                    if "-" in self.agent_name
-                    else self.agent_name
+            # Use streaming chat message
+            async for step in self.daemon_client.chat_message_streaming(
+                self.agent_name, message
+            ):
+                if step.get("status") == "error":
+                    error_msg = step.get("message", "Unknown error")
+                    await self.add_message(f"Error: {error_msg}", "System", "error")
+                    spinner.display = False
+                    status_text.update("[#e78284]❌ Error[/#e78284]")
+                    break
+
+                # Display each streaming step in real-time
+                step_type = step.get("type", "unknown")
+                content = step.get("content", "")
+                is_final = step.get("is_final", False)
+
+                # Debug: Log step types to understand what we're receiving
+                print(
+                    f"🔍 DEBUG: Received step_type='{step_type}', is_final={is_final}"
                 )
-                
-                # Parse and display ReAct steps, then get final response
-                final_response = await self.parse_and_display_react_steps(response, agent_display_name)
-                
-                # Add final agent response widget
-                await self.add_message(final_response, agent_display_name, "agent")
 
-                # Hide spinner and show ready status
-                spinner.display = False
-                status_text.update("[#a6d189]🤖 Ready[/#a6d189]")
+                if step_type == "thought":
+                    await self.add_message(content, agent_display_name, "thought")
+                elif step_type == "tool_use":
+                    # Handle tool_use steps (when agent decides to use a tool)
+                    if isinstance(content, dict):
+                        thought = content.get("thought", "")
+                        tool_name = content.get("tool_name", "Unknown tool")
+                        if thought:
+                            await self.add_message(
+                                thought, agent_display_name, "thought"
+                            )
+                        await self.add_message(
+                            f"Using {tool_name}", agent_display_name, "tool_use"
+                        )
+                    else:
+                        await self.add_message(
+                            f"Using tool: {content}", agent_display_name, "tool_use"
+                        )
+                elif step_type == "tool_result":
+                    # Handle tool_result steps (complete cycle with thought + tool use + result)
+                    if isinstance(content, dict):
+                        thought = content.get("thought", "")
+                        tool_name = content.get("tool_name", "Unknown tool")
+                        if thought:
+                            await self.add_message(
+                                thought, agent_display_name, "thought"
+                            )
+                        if tool_name:
+                            await self.add_message(
+                                f"Using {tool_name}", agent_display_name, "tool_use"
+                            )
+                        # Don't display the actual tool result as requested by user
+                    else:
+                        await self.add_message(
+                            "Tool executed", agent_display_name, "tool_use"
+                        )
+                elif step_type == "final":
+                    await self.add_message(content, agent_display_name, "agent")
+
+                # Update status during streaming
+                if not is_final:
+                    if step_type == "thought":
+                        status_text.update("[#e5c890]💭 Thought [/#e5c890]")
+                    elif step_type == "tool_use":
+                        status_text.update("[#c886f7]🔧 Using tool...[/#c886f7]")
+                else:
+                    # Final step - hide spinner and show ready
+                    spinner.display = False
+                    status_text.update("[#a6d189]🤖 Ready[/#a6d189]")
+                    break
 
         except Exception as e:
             await self.add_message(f"Error: {e}", "System", "error")

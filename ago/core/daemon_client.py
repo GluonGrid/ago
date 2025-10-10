@@ -69,6 +69,53 @@ class DaemonClient:
         except Exception as e:
             raise RuntimeError(f"Failed to communicate with daemon: {e}")
 
+    async def _send_streaming_command(self, command: str, args: Dict[str, Any] = None):
+        """Send command to daemon and yield streaming responses"""
+        if not self.socket_file.exists():
+            raise RuntimeError("Daemon socket not found. Is daemon running?")
+
+        try:
+            # Connect to daemon
+            reader, writer = await asyncio.open_unix_connection(str(self.socket_file))
+
+            # Send command
+            request = {"command": command, "args": args or {}}
+            request_data = msgpack.packb(request)
+            length_prefix = len(request_data).to_bytes(4, "big")
+            writer.write(length_prefix + request_data)
+            await writer.drain()
+
+            # Read streaming responses
+            while True:
+                try:
+                    # Read response length
+                    length_bytes = await reader.readexactly(4)
+                    response_length = int.from_bytes(length_bytes, "big")
+
+                    # Read response data
+                    response_data = await reader.readexactly(response_length)
+                    if not response_data:
+                        break
+
+                    response = msgpack.unpackb(response_data, raw=False)
+                    
+                    # Yield the streaming step
+                    yield response
+                    
+                    # Check if this is the final response
+                    if response.get("status") == "completed" or response.get("is_final", False):
+                        break
+                        
+                except asyncio.IncompleteReadError:
+                    # Connection closed by daemon
+                    break
+
+            writer.close()
+            await writer.wait_closed()
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to send streaming command to daemon: {e}")
+
     async def _ensure_daemon_running(self) -> bool:
         """Ensure daemon is running, start if necessary"""
         if await self._is_daemon_running():
@@ -195,6 +242,13 @@ class DaemonClient:
         return await self._send_command(
             "chat_message", {"agent_name": agent_name, "message": message}
         )
+    
+    async def chat_message_streaming(self, agent_name: str, message: str):
+        """Send chat message to agent with streaming responses"""
+        async for step in self._send_streaming_command(
+            "chat_message_streaming", {"agent_name": agent_name, "message": message}
+        ):
+            yield step
 
     async def get_agent_logs(self, agent_name: str, tail: int = 10) -> Dict[str, Any]:
         """Get agent conversation logs"""

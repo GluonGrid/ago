@@ -25,7 +25,7 @@ classifiers = [
 dependencies = [
     "typer",
     "rich",
-    "textual",
+    "textual[syntax,synthax]",
     "pyyaml",
     "pocketflow",
     "aiohttp",
