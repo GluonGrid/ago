@@ -32,7 +32,7 @@ class StreamingFlow:
             current_node = self.original_flow.start_node
             iteration = 0
             
-            while current_node and iteration < 10:  # Safety limit
+            while current_node:  # Run until natural completion or user quits
                 iteration += 1
                 self.logger.info(f"🔄 Streaming iteration {iteration}")
                 

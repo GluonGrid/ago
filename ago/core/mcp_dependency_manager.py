@@ -3,6 +3,7 @@
 MCP Dependency Manager - Auto-install missing MCP servers for templates
 """
 
+import logging
 from typing import Dict, List, Any, Optional
 
 from .mcp_registry import registry, suggest_mcp_config
@@ -13,7 +14,7 @@ class MCPDependencyManager:
     """Manages MCP server dependencies for templates"""
     
     def __init__(self):
-        pass
+        self.logger = logging.getLogger("ago.mcp_dependency_manager")
     
     def extract_mcp_requirements(self, template_data: Dict[str, Any]) -> List[str]:
         """Extract MCP server requirements from template data"""
@@ -40,7 +41,11 @@ class MCPDependencyManager:
         
         if not required_servers:
             # No MCP dependencies
+            self.logger.info(f"Template {template_name} has no MCP dependencies")
             return True
+        
+        self.logger.info(f"Checking MCP dependencies for template: {template_name}")
+        self.logger.info(f"Required servers: {required_servers}")
         
         print(f"🔍 Checking MCP dependencies for template: {template_name}")
         
@@ -49,9 +54,12 @@ class MCPDependencyManager:
         
         # Check which servers are missing
         for server_id in required_servers:
+            self.logger.info(f"Checking server: {server_id}")
             if self._is_server_available(server_id):
+                self.logger.info(f"Server {server_id} is available")
                 existing_servers.append(server_id)
             else:
+                self.logger.info(f"Server {server_id} is missing")
                 missing_servers.append(server_id)
         
         if existing_servers:
@@ -172,93 +180,72 @@ class MCPDependencyManager:
 
     def _is_server_available(self, server_identifier: str) -> bool:
         """Check if MCP server is already configured"""
+        self.logger.info(f"Checking if server {server_identifier} is available")
+        
         # Check by alias first
         if registry.is_known_server(server_identifier):
+            self.logger.info(f"Found server {server_identifier} by alias")
             return True
+        
+        servers = registry.get_known_servers()
+        self.logger.info(f"Available servers: {list(servers.keys())}")
         
         # Check by command signature (for npm packages)
         if server_identifier.startswith("@"):
+            self.logger.info(f"Checking npm package: {server_identifier}")
             # Look for existing server with matching npm package
-            servers = registry.get_known_servers()
             for alias, config in servers.items():
+                self.logger.info(f"Checking server {alias}: command={config.get('command')}, args={config.get('args', [])}")
                 if (config.get("command") == "npx" and 
                     server_identifier in config.get("args", [])):
+                    self.logger.info(f"Found npm package {server_identifier} in server {alias}")
                     return True
         
+        # Check for Python script paths
+        elif server_identifier.endswith(".py"):
+            self.logger.info(f"Checking Python script: {server_identifier}")
+            # Look for existing server with matching Python script path
+            for alias, config in servers.items():
+                if (config.get("command") == "python" and 
+                    server_identifier in config.get("args", [])):
+                    self.logger.info(f"Found Python script {server_identifier} in server {alias}")
+                    return True
+            
+            # Also check for absolute path matches
+            import os
+            abs_path = os.path.abspath(server_identifier)
+            self.logger.info(f"Checking absolute path: {abs_path}")
+            for alias, config in servers.items():
+                if config.get("command") == "python":
+                    for arg in config.get("args", []):
+                        if os.path.abspath(arg) == abs_path:
+                            self.logger.info(f"Found Python script {server_identifier} (abs path) in server {alias}")
+                            return True
+        
+        # Enhanced matching: check if the template requirement corresponds to a configured server
+        # This handles cases where template requires "@modelcontextprotocol/server-filesystem" 
+        # but server is configured as alias "server_filesystem"
+        else:
+            self.logger.info(f"Checking enhanced matching for: {server_identifier}")
+            # Check if any configured server matches this identifier
+            for alias, config in servers.items():
+                # For npm packages, check if the configured args contain the server_identifier
+                if config.get("command") == "npx":
+                    args = config.get("args", [])
+                    self.logger.info(f"Checking npx server {alias} with args: {args}")
+                    # Check exact match in args
+                    if server_identifier in args:
+                        self.logger.info(f"Found exact match for {server_identifier} in {alias}")
+                        return True
+                    # Check if any arg contains the identifier (for version-specific packages)
+                    for arg in args:
+                        if server_identifier in arg or arg in server_identifier:
+                            self.logger.info(f"Found partial match: {server_identifier} <-> {arg} in {alias}")
+                            return True
+        
+        self.logger.info(f"Server {server_identifier} is not available")
         return False
     
-    async def _install_missing_servers(self, missing_servers: List[str]) -> bool:
-        """Install missing MCP servers"""
-        all_success = True
-        
-        for server_id in missing_servers:
-            self.console.print(f"\n🔧 Installing MCP server: [bold]{server_id}[/bold]")
-            
-            try:
-                success = await self._install_single_server(server_id)
-                if not success:
-                    all_success = False
-                    self.console.print(f"❌ Failed to install {server_id}")
-            except Exception as e:
-                all_success = False
-                self.console.print(f"❌ Error installing {server_id}: {e}")
-        
-        return all_success
-    
-    async def _install_single_server(self, server_id: str) -> bool:
-        """Install a single MCP server with user-provided configuration"""
-        # Get suggested configuration
-        suggested_config = suggest_mcp_config(server_id)
-        
-        if not suggested_config:
-            self.console.print(f"❓ Unknown server: {server_id}")
-            self.console.print("   Please add it manually with: [bold]ago mcp add[/bold]")
-            return False
-        
-        self.console.print(f"📋 {suggested_config['description']}")
-        
-        command = suggested_config["command"]
-        args = suggested_config["args"].copy()
-        env_vars = {}
-        description = suggested_config["description"]
-        
-        # Ask for additional command arguments
-        if Confirm.ask("Add command arguments?", default=False):
-            extra_args = Prompt.ask("Arguments (space-separated)", default="")
-            if extra_args.strip():
-                args.extend(extra_args.split())
-        
-        # Ask for environment variables
-        if Confirm.ask("Add environment variables?", default=False):
-            while True:
-                env_name = Prompt.ask("Environment variable name (or press Enter to finish)", default="")
-                if not env_name.strip():
-                    break
-                env_value = Prompt.ask(f"Value for {env_name}")
-                env_vars[env_name] = env_value
-        
-        # Generate unique alias
-        suggested_alias = server_id.split('/')[-1].replace('-', '_')
-        alias = self._generate_unique_alias(suggested_alias)
-        
-        try:
-            # Save configuration
-            config_manager.add_server(alias, command, args, env_vars, description)
-            self.console.print(f"✅ Installed as '[bold]{alias}[/bold]'")
-            return True
-            
-        except Exception as e:
-            self.console.print(f"❌ Installation failed: {e}")
-            return False
-    
-    def _generate_unique_alias(self, suggested_alias: str) -> str:
-        """Generate a unique alias for the server"""
-        alias = suggested_alias
-        counter = 1
-        while registry.is_known_server(alias):
-            alias = f"{suggested_alias}_{counter}"
-            counter += 1
-        return alias
 
 
 # Global dependency manager instance

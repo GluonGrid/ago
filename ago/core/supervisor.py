@@ -22,9 +22,9 @@ class LLMService:
 
     @staticmethod
     async def call_llm(
-        prompt: str, agent_name: str = "Supervisor", max_retries: int = 3
+        prompt: str, agent_name: str = "Supervisor", images=None, max_retries: int = 3
     ) -> str:
-        """Make LLM call with retry logic"""
+        """Make LLM call with retry logic and image support"""
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise Exception(f"ANTHROPIC_API_KEY is required for {agent_name}")
@@ -36,10 +36,13 @@ class LLMService:
             "anthropic-version": "2023-06-01",
         }
 
+        # Build message content (text + images for Claude)
+        content = LLMService._build_claude_content(prompt, images)
+        
         data = {
             "model": "claude-sonnet-4-20250514",
             "max_tokens": 64000,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
         }
 
         for attempt in range(max_retries):
@@ -71,6 +74,51 @@ class LLMService:
                 await asyncio.sleep(1)
 
         raise Exception(f"LLM call failed after {max_retries} attempts")
+
+    @staticmethod
+    def _build_claude_content(prompt: str, images=None):
+        """Build Claude API content with text and images"""
+        if not images:
+            return prompt
+            
+        # Handle different image data structures
+        image_list = []
+        if isinstance(images, list):
+            image_list = images
+        else:
+            image_list = [images]
+        
+        # Build content array for Claude
+        content = [{"type": "text", "text": prompt}]
+        
+        for image_data in image_list:
+            # Skip if not image content
+            if not (hasattr(image_data, 'type') and image_data.type == 'image'):
+                continue
+                
+            # Extract image data
+            if hasattr(image_data, 'data'):
+                # Determine media type
+                media_type = "image/png"  # Default
+                if hasattr(image_data, 'media_type'):
+                    media_type = image_data.media_type
+                elif hasattr(image_data, 'format'):
+                    if image_data.format.lower() in ['jpg', 'jpeg']:
+                        media_type = "image/jpeg"
+                    elif image_data.format.lower() == 'png':
+                        media_type = "image/png"
+                
+                # Add image to content
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": str(image_data.data)
+                    }
+                })
+        
+        return content
 
 
 class YAMLParser:
@@ -298,9 +346,10 @@ IMPORTANT:
 7. Keep single-line fields without the | character"""
 
         try:
-            # Make LLM call
+            # Make LLM call with images if available
             self.logger.info(f"ReAct iteration {self.iteration + 1}")
-            response = await LLMService.call_llm(prompt, self.agent_name)
+            images = shared.get("latest_tool_result", [])
+            response = await LLMService.call_llm(prompt, self.agent_name, images=images)
 
             # Parse response
             self.logger.info(

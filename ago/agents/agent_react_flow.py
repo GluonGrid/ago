@@ -33,11 +33,34 @@ class AgentReActNode(BaseAgentNode):
         agent_name: str,
         agent_spec: Dict[str, Any],
         agent_template: str,
-        max_iterations: int = 5,
+        max_iterations: int = 50,
     ):
         super().__init__(agent_name, max_iterations)
         self.agent_spec = agent_spec
         self.agent_template = agent_template
+
+    def _process_tool_result(self, result):
+        """Create text description of tool result for scratchpad history"""
+        try:
+            # Handle ImageContent objects (from MCP tools like bytebot)
+            if hasattr(result, 'type') and result.type == 'image':
+                return "[Screenshot captured - image will be analyzed by LLM]"
+            
+            # Handle text content
+            elif hasattr(result, 'type') and result.type == 'text':
+                return getattr(result, 'text', str(result))
+            
+            # Handle other structured content
+            elif hasattr(result, 'type'):
+                return f"[{result.type} content received]"
+            
+            # Handle plain objects
+            else:
+                return str(result)
+                
+        except Exception as e:
+            self.logger.warning(f"Error processing tool result: {e}")
+            return f"[Tool result processing error: {str(e)}]"
 
     async def prep_async(self, shared):
         """Prepare ReAct reasoning context"""
@@ -67,6 +90,7 @@ class AgentReActNode(BaseAgentNode):
             "scratchpad": shared.get("supervisor_scratchpad", ""),
             "tools": shared.get("tools", []),
             "conversation_history": shared.get("conversation_history", []),
+            "latest_tool_result": shared.get("latest_tool_result"),
         }
 
     async def exec_async(self, prep_res):
@@ -156,7 +180,9 @@ IMPORTANT:
             self.logger.info(
                 f"ReAct iteration {self.iteration + 1} for {self.agent_name}"
             )
-            response = await LLMService.call_llm(prompt, self.agent_name)
+            # Get images from latest tool result for Claude vision
+            images = prep_res.get("latest_tool_result")
+            response = await LLMService.call_llm(prompt, self.agent_name, images=images)
 
             # Parse response using existing nator parser
             parsed = YAMLParser.parse_response(response, tools)
@@ -245,11 +271,14 @@ IMPORTANT:
                         f"{self.agent_name} tool result: {str(tool_result)[:100]}..."
                     )
 
-                    # Add tool result to scratchpad
+                    # Store tool result for LLM (keep ImageContent intact)
+                    shared["latest_tool_result"] = tool_result
+                    
+                    # Add text description to scratchpad for history
                     if isinstance(tool_result, list) and len(tool_result) > 0:
-                        result_text = str(tool_result[0])
+                        result_text = self._process_tool_result(tool_result[0])
                     else:
-                        result_text = str(tool_result)
+                        result_text = self._process_tool_result(tool_result)
 
                     shared["supervisor_scratchpad"] += f"\nTOOL_RESULT: {result_text}"
 
@@ -265,10 +294,11 @@ IMPORTANT:
                 self.logger.info(
                     f"{self.agent_name} reached max iterations, forcing final answer"
                 )
-                shared["supervisor_scratchpad"] += (
-                    "\nTHOUGHT: Maximum iterations reached, providing final answer"
-                )
+                # Store a final response and end the conversation
+                shared["assistant_response"] = "I've reached the maximum number of iterations for this task. Please start a new conversation if you need further assistance."
+                shared["supervisor_scratchpad"] = ""
                 self.iteration = 0
+                return "end"
 
             return "continue"
 
@@ -277,10 +307,11 @@ IMPORTANT:
             self.iteration += 1
             if self.iteration >= self.max_iterations:
                 self.logger.info(f"{self.agent_name} max thinking iterations reached")
-                shared["supervisor_scratchpad"] += (
-                    "\nTHOUGHT: Maximum iterations reached, providing final answer"
-                )
+                # Store a final response and end the conversation
+                shared["assistant_response"] = "I've reached the maximum number of iterations for this task. Please start a new conversation if you need further assistance."
+                shared["supervisor_scratchpad"] = ""
                 self.iteration = 0
+                return "end"
 
             return "continue"
 

@@ -1,22 +1,22 @@
 name: test-mcp-template
 version: "1.0.0"
 description: "Test template with MCP dependencies"
-model: claude-sonnet-4-20250514
+model: claude-opus-4-1-20250805
 
 # MCP servers this template requires
 mcp_servers:
-  - "@modelcontextprotocol/server-filesystem"
   - "@upstash/context7-mcp"
+  - "mcp-remote http://127.0.0.1:9990/mcp"
 
 tools:
-  - "server_filesystem.*"
   - "context7_mcp.*"
+  - "bytebot.*"
 
 prompt: |
-  You are a test agent with access to filesystem and context7 tools.
+  You are a test agent with access to bytebot and context7 tools.
   
   You can:
-  - Read and write files using filesystem tools
+  - Manipulate a computer using bytebot tools
   - Get up-to-date documentation using context7 tools
   
   Always be helpful and use available tools when needed.

@@ -13,7 +13,7 @@ class MCPServerRegistry:
     """Registry that loads MCP server configurations from YAML"""
     
     def __init__(self):
-        self.config_file = Path(__file__).parent.parent / "config" / "mcp_servers.yaml"
+        self.config_file = Path.home() / ".ago" / "mcp_servers.yaml"
         self._config_cache = None
     
     def _load_config(self) -> Dict[str, Any]:
