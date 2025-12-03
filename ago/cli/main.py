@@ -774,9 +774,49 @@ def daemon_status():
 
 @app.command()
 def version():
-    """📋 Show Ago version"""
-    console.print("🤖 [bold]Ago[/bold] v1.0.0")
-    console.print("Docker-like orchestration for AI agents")
+    """📋 Show Ago version and system information"""
+    try:
+        # Read version from pyproject.toml
+        project_root = Path(__file__).parent.parent.parent
+        pyproject_path = project_root / "pyproject.toml"
+
+        ago_version = "Unknown"
+        if pyproject_path.exists():
+            # Parse pyproject.toml manually (simple approach, no extra dependencies)
+            with open(pyproject_path, "r") as f:
+                for line in f:
+                    if line.startswith("version ="):
+                        ago_version = line.split("=")[1].strip().strip('"').strip("'")
+                        break
+
+        # Get Python version
+        python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+
+        # Get operating system
+        os_name = platform.system()
+        os_version = platform.release()
+        os_display = f"{os_name} {os_version}"
+
+        # Get installation path
+        install_path = str(Path(__file__).parent.parent)
+
+        # Create Rich table
+        table = Table(title="Ago Version Information", title_style="bold cyan")
+        table.add_column("Property", style="cyan", no_wrap=True)
+        table.add_column("Value", style="green")
+
+        table.add_row("Ago Version", ago_version)
+        table.add_row("Python Version", python_version)
+        table.add_row("Operating System", os_display)
+        table.add_row("Installation Path", install_path)
+
+        console.print(table)
+
+    except Exception as e:
+        console.print(f"❌ [red]Error reading version information:[/red] {str(e)}")
+        # Fallback display
+        console.print("🤖 [bold]Ago[/bold] - Docker-like orchestration for AI agents")
+        console.print(f"Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
 
 
 # Magic Create Command Helper Functions
