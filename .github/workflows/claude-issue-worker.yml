@@ -1,0 +1,68 @@
+name: Claude Code Issue Worker
+
+on:
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+
+jobs:
+  claude-work:
+    runs-on: ubuntu-latest
+    # Only run if issue has 'claude' label or comment mentions @claude
+    if: |
+      (github.event.issue.labels && contains(github.event.issue.labels.*.name, 'claude')) ||
+      (github.event.comment && contains(github.event.comment.body, '@claude'))
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Claude Code - Work on Issue
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are working on the Ago project - a Docker-like CLI for AI agents.
+
+            **CRITICAL: Read CLAUDE.md and ONBOARDING.md first for architecture and coding standards.**
+
+            ## Your Task
+            Review the issue description and implement the requested feature or fix.
+
+            ## Architecture Guidelines
+            - Three-layer: CLI (Typer) → Daemon (asyncio) → Agent (PocketFlow)
+            - Use AsyncNode pattern: prep_async() / exec_async() / post_async()
+            - Never access shared store in exec_async()
+            - All CLI output via Rich Console (never print())
+            - Proper type hints and docstrings required
+
+            ## Key Files
+            - CLI commands: ago/cli/main.py
+            - Daemon logic: ago/core/daemon.py
+            - Agent reasoning: ago/agents/agent_react_flow.py
+            - Agent templates: ago/templates/*.agt
+            - MCP integration: ago/core/mcp_integration.py
+
+            ## Development Process
+            1. Read CLAUDE.md for coding standards
+            2. Review related code files
+            3. Implement the solution following patterns
+            4. Test your changes
+            5. Format code (black, ruff)
+            6. Create a PR with clear description
+
+            ## Quality Checklist
+            - [ ] Type hints on all functions
+            - [ ] Docstrings for public APIs
+            - [ ] Rich Console for output
+            - [ ] Proper error handling
+            - [ ] Async/await correct
+            - [ ] No hardcoded paths
+            - [ ] Tests included
+            - [ ] CLAUDE.md patterns followed
+
+            Now, implement the solution and create a pull request.
+          claude_args: "--max-turns 15 --model claude-sonnet-4-5"
