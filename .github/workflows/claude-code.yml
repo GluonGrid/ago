@@ -1,37 +1,49 @@
-name: Claude Code Issue Worker
+name: Claude Code
 
 on:
-  issues:
-    types: [opened, labeled]
   issue_comment:
     types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  pull_request_review:
+    types: [submitted]
 
 jobs:
-  claude-work:
-    runs-on: ubuntu-latest
-    # Only run if issue has 'claude' label or comment mentions @claude
+  claude:
     if: |
-      (github.event.issue.labels && contains(github.event.issue.labels.*.name, 'claude')) ||
-      (github.event.comment && contains(github.event.comment.body, '@claude'))
-
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
       issues: write
       id-token: write
+      actions: read
 
     steps:
-      - name: Claude Code - Work on Issue
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: |
-            You are working on the Ago project - a Docker-like CLI for AI agents.
+          claude_args: |
+            --max-turns 15
+            --model claude-sonnet-4-5
+            --system-prompt "You are working on the Ago project - a Docker-like CLI for AI agents.
 
             **CRITICAL: Read CLAUDE.md and ONBOARDING.md first for architecture and coding standards.**
 
             ## Your Task
-            Review the issue description and implement the requested feature or fix.
+            Review the issue/PR description and implement the requested feature or fix.
 
             ## Architecture Guidelines
             - Three-layer: CLI (Typer) → Daemon (asyncio) → Agent (PocketFlow)
@@ -65,5 +77,4 @@ jobs:
             - [ ] Tests included
             - [ ] CLAUDE.md patterns followed
 
-            Now, implement the solution and create a pull request.
-          claude_args: "--max-turns 15 --model claude-sonnet-4-5"
+            Now, implement the solution and create a pull request."
