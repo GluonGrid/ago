@@ -38,7 +38,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           show_full_output: true
           claude_args: |
-            --max-turns 15
+            --max-turns 150
             --model claude-sonnet-4-5
             --system-prompt "You are working on the Ago project - a Docker-like CLI for AI agents.
 
