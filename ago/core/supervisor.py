@@ -25,9 +25,18 @@ class LLMService:
         prompt: str, agent_name: str = "Supervisor", images=None, max_retries: int = 3
     ) -> str:
         """Make LLM call with retry logic and image support"""
+        # Try to get API key from environment first, then from config
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
-            raise Exception(f"ANTHROPIC_API_KEY is required for {agent_name}")
+            # Import here to avoid circular dependency
+            from .config import config
+            api_key = config.get_config_value("env.ANTHROPIC_API_KEY")
+
+        if not api_key:
+            raise Exception(
+                f"ANTHROPIC_API_KEY is required for {agent_name}. "
+                "Set it with: ago config set ANTHROPIC_API_KEY your-key-here"
+            )
 
         url = "https://api.anthropic.com/v1/messages"
         headers = {

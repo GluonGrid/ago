@@ -34,6 +34,13 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback()
+def main_callback():
+    """Load configuration before running commands."""
+    # Load environment variables from config files
+    config.load_env_from_config()
+
+
 async def validate_agent_exists(agent_name: str, daemon_client: DaemonClient) -> bool:
     """
     Validate that an agent exists and display helpful error message if not.
@@ -2072,6 +2079,207 @@ def registry_remove(
 
     except Exception as e:
         console.print(f"❌ [red]Error removing registry:[/red] {str(e)}")
+
+
+# Configuration management commands
+config_app = typer.Typer(help="⚙️  Configuration management")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(..., help="Configuration key (e.g., ANTHROPIC_API_KEY or default.model)"),
+    value: str = typer.Argument(..., help="Configuration value"),
+    local: bool = typer.Option(False, "--local", help="Set in local config (.ago/config.yaml)"),
+):
+    """
+    Set a configuration value.
+
+    Environment variables (UPPERCASE or containing _) are stored in the 'env' section.
+    Other values are stored as regular config (e.g., default.model).
+
+    Examples:
+        ago config set ANTHROPIC_API_KEY sk-ant-xxxxx
+        ago config set default.model claude-3-5-haiku-20241022 --local
+        ago config set default.temperature 0.7
+    """
+    try:
+        scope = "local" if local else "global"
+        config.set_config(key, value, scope)
+
+        # Mask sensitive values in output
+        display_value = value
+        if any(sensitive in key.upper() for sensitive in ["KEY", "TOKEN", "PASSWORD", "SECRET"]):
+            if len(value) > 8:
+                display_value = f"{value[:4]}...{value[-4:]}"
+            else:
+                display_value = "***"
+
+        console.print(f"[green]✓[/green] Set {key} = {display_value} in {scope} config")
+
+        # Show warning for sensitive values
+        if any(sensitive in key.upper() for sensitive in ["KEY", "TOKEN", "PASSWORD", "SECRET"]):
+            if not local:
+                console.print(f"[yellow]⚠[/yellow] Sensitive value stored in global config (~/.ago/config.yaml)")
+                console.print(f"[dim]   Consider using --local for project-specific credentials[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]✗ Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+
+@config_app.command("get")
+def config_get(
+    key: str = typer.Argument(..., help="Configuration key to retrieve"),
+):
+    """
+    Get a configuration value.
+
+    Examples:
+        ago config get ANTHROPIC_API_KEY
+        ago config get default.model
+    """
+    try:
+        # Check env section first for env-style keys
+        is_env_var = key.isupper() or "_" in key
+        if is_env_var:
+            value = config.get_config_value(f"env.{key}")
+            if value is None:
+                # Check direct OS environment
+                value = os.getenv(key)
+        else:
+            value = config.get_config_value(key)
+
+        if value is None:
+            console.print(f"[yellow]⚠[/yellow] Key '{key}' not found in config")
+            raise typer.Exit(1)
+
+        # Mask sensitive values
+        display_value = value
+        if any(sensitive in key.upper() for sensitive in ["KEY", "TOKEN", "PASSWORD", "SECRET"]):
+            if isinstance(value, str) and len(value) > 8:
+                display_value = f"{value[:4]}...{value[-4:]}"
+            else:
+                display_value = "***"
+
+        console.print(f"{key} = {display_value}")
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]✗ Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+
+@config_app.command("unset")
+def config_unset(
+    key: str = typer.Argument(..., help="Configuration key to remove"),
+    local: bool = typer.Option(False, "--local", help="Remove from local config only"),
+):
+    """
+    Remove a configuration value.
+
+    Examples:
+        ago config unset ANTHROPIC_API_KEY
+        ago config unset default.model --local
+    """
+    try:
+        scope = "local" if local else "global"
+        removed = config.unset_config(key, scope)
+
+        if removed:
+            console.print(f"[green]✓[/green] Removed {key} from {scope} config")
+        else:
+            console.print(f"[yellow]⚠[/yellow] Key '{key}' not found in {scope} config")
+
+    except Exception as e:
+        console.print(f"[red]✗ Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+
+@config_app.command("list")
+def config_list(
+    show_origin: bool = typer.Option(False, "--show-origin", help="Show where each config value comes from"),
+):
+    """
+    List all configuration values.
+
+    Examples:
+        ago config list
+        ago config list --show-origin
+    """
+    try:
+        config_data = config.list_config(show_origin=show_origin)
+
+        if show_origin:
+            # Display with origin information
+            table = Table(title="Configuration", show_header=True, header_style="bold cyan")
+            table.add_column("Source", style="dim")
+            table.add_column("Key", style="cyan")
+            table.add_column("Value", style="green")
+
+            # Group by origin
+            origins = ["env", "local", "global", "default"]
+            for origin in origins:
+                items = [(k, v) for k, v in config_data.items() if v.get("origin") == origin]
+                if not items:
+                    continue
+
+                for key, info in sorted(items):
+                    value = info["value"]
+
+                    # Mask sensitive values
+                    if any(sensitive in key.upper() for sensitive in ["KEY", "TOKEN", "PASSWORD", "SECRET"]):
+                        if isinstance(value, str) and len(value) > 8:
+                            value = f"{value[:4]}...{value[-4:]}"
+                        else:
+                            value = "***"
+
+                    # Truncate long values
+                    if isinstance(value, (dict, list)):
+                        value = str(value)
+                    if isinstance(value, str) and len(value) > 60:
+                        value = f"{value[:57]}..."
+
+                    table.add_row(origin, key, str(value))
+
+            console.print(table)
+        else:
+            # Simple display
+            table = Table(title="Configuration", show_header=True, header_style="bold cyan")
+            table.add_column("Key", style="cyan")
+            table.add_column("Value", style="green")
+
+            # Flatten and display only leaf values
+            def flatten_dict(d, prefix=""):
+                for k, v in d.items():
+                    key = f"{prefix}.{k}" if prefix else k
+                    if isinstance(v, dict):
+                        yield from flatten_dict(v, key)
+                    else:
+                        yield (key, v)
+
+            for key, value in sorted(flatten_dict(config_data)):
+                # Mask sensitive values
+                if any(sensitive in key.upper() for sensitive in ["KEY", "TOKEN", "PASSWORD", "SECRET"]):
+                    if isinstance(value, str) and len(value) > 8:
+                        value = f"{value[:4]}...{value[-4:]}"
+                    else:
+                        value = "***"
+
+                # Truncate long values
+                if isinstance(value, (dict, list)):
+                    value = str(value)
+                if isinstance(value, str) and len(value) > 60:
+                    value = f"{value[:57]}..."
+
+                table.add_row(key, str(value))
+
+            console.print(table)
+
+    except Exception as e:
+        console.print(f"[red]✗ Error:[/red] {str(e)}")
+        raise typer.Exit(1)
 
 
 # Register MCP commands
