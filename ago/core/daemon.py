@@ -60,6 +60,10 @@ class AgoDaemon:
         if self.is_running():
             raise RuntimeError("Daemon already running")
 
+        # Load environment variables from config
+        from .config import config
+        config.load_env_from_config()
+
         # Write PID file
         with open(self.pid_file, "w") as f:
             f.write(str(os.getpid()))

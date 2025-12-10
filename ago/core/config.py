@@ -296,6 +296,173 @@ class AgoConfig:
 
         return current
 
+    def set_config(self, key: str, value: str, scope: str = "global") -> None:
+        """
+        Set a configuration value.
+
+        Args:
+            key: Configuration key (e.g., ANTHROPIC_API_KEY or default.model)
+            value: Configuration value
+            scope: Either "global" or "local"
+
+        Raises:
+            ValueError: If scope is invalid
+        """
+        if scope not in ["global", "local"]:
+            raise ValueError(f"Invalid scope: {scope}. Must be 'global' or 'local'")
+
+        # Determine if this is an environment variable or config value
+        # Environment variables are typically UPPERCASE or contain _
+        is_env_var = key.isupper() or "_" in key
+
+        if is_env_var:
+            # Store in env section of config
+            key_path = f"env.{key}"
+        else:
+            # Store as regular config (could be nested like default.model)
+            key_path = key
+
+        if scope == "global":
+            self.set_global_config(key_path, value)
+        else:
+            self.set_project_config(key_path, value)
+
+    def unset_config(self, key: str, scope: str = "global") -> bool:
+        """
+        Remove a configuration value.
+
+        Args:
+            key: Configuration key to remove
+            scope: Either "global" or "local"
+
+        Returns:
+            True if key was found and removed, False otherwise
+
+        Raises:
+            ValueError: If scope is invalid
+        """
+        if scope not in ["global", "local"]:
+            raise ValueError(f"Invalid scope: {scope}. Must be 'global' or 'local'")
+
+        # Determine the config file to modify
+        if scope == "global":
+            config_file = self.global_config_file
+        else:
+            if not self.project_config_dir:
+                return False
+            config_file = self.project_config_file
+
+        if not config_file.exists():
+            return False
+
+        # Load config
+        config_data = self._load_yaml_config(config_file)
+
+        # Determine if this is an env var or regular config
+        is_env_var = key.isupper() or "_" in key
+        key_path = f"env.{key}" if is_env_var else key
+
+        # Navigate to parent and remove key
+        keys = key_path.split(".")
+        current = config_data
+        for k in keys[:-1]:
+            if k not in current or not isinstance(current[k], dict):
+                return False
+            current = current[k]
+
+        if keys[-1] not in current:
+            return False
+
+        del current[keys[-1]]
+
+        # Save config
+        with open(config_file, "w") as f:
+            yaml.dump(config_data, f, default_flow_style=False)
+
+        # Clear cache
+        self._config_cache = None
+        return True
+
+    def list_config(self, show_origin: bool = False) -> Dict[str, Any]:
+        """
+        List all configuration values.
+
+        Args:
+            show_origin: If True, include the source of each config value
+
+        Returns:
+            Dictionary of config values (with origin info if requested)
+        """
+        if not show_origin:
+            return self.get_config()
+
+        # Build config with origin information
+        result = {}
+
+        # 1. Defaults
+        default_config = self._get_default_config()
+        for key in self._flatten_dict(default_config):
+            result[key] = {"value": self._get_nested(default_config, key), "origin": "default"}
+
+        # 2. Global config
+        if self.global_config_file.exists():
+            global_config = self._load_yaml_config(self.global_config_file)
+            for key in self._flatten_dict(global_config):
+                result[key] = {"value": self._get_nested(global_config, key), "origin": "global"}
+
+        # 3. Local config
+        if self.project_config_file and self.project_config_file.exists():
+            local_config = self._load_yaml_config(self.project_config_file)
+            for key in self._flatten_dict(local_config):
+                result[key] = {"value": self._get_nested(local_config, key), "origin": "local"}
+
+        # 4. Environment variables
+        for key, value in os.environ.items():
+            if key.startswith("AGO_") or key in ["ANTHROPIC_API_KEY", "BRAVE_API_KEY"]:
+                result[key] = {"value": value, "origin": "env"}
+
+        return result
+
+    def _flatten_dict(self, d: Dict[str, Any], parent_key: str = "") -> List[str]:
+        """Flatten nested dict to dot-notation keys"""
+        keys = []
+        for k, v in d.items():
+            new_key = f"{parent_key}.{k}" if parent_key else k
+            if isinstance(v, dict):
+                keys.extend(self._flatten_dict(v, new_key))
+            else:
+                keys.append(new_key)
+        return keys
+
+    def _get_nested(self, d: Dict[str, Any], key: str) -> Any:
+        """Get value from nested dict using dot notation"""
+        keys = key.split(".")
+        current = d
+        for k in keys:
+            if isinstance(current, dict) and k in current:
+                current = current[k]
+            else:
+                return None
+        return current
+
+    def load_env_from_config(self) -> None:
+        """
+        Load environment variables from config files.
+
+        Priority: OS environment > local config > global config
+        This ensures existing env vars are never overridden.
+        """
+        # Get merged config
+        config_data = self.get_config()
+
+        # Extract env variables from config
+        env_vars = config_data.get("env", {})
+
+        # Set environment variables (but don't override existing ones)
+        for key, value in env_vars.items():
+            if key not in os.environ:
+                os.environ[key] = str(value)
+
 
 # Global config instance
 config = AgoConfig()
