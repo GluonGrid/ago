@@ -1,0 +1,11 @@
+name: simple-assistant
+version: "1.0.0"
+description: "Simple assistant for linear workflows"
+author: "Ago Team"
+model: claude-sonnet-4-20250514
+temperature: 0.7
+tools: []
+
+prompt: |
+  You are a helpful AI assistant. Analyze the input provided and give a clear,
+  concise response. Keep your response focused and relevant to the user's request.

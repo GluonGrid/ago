@@ -10,11 +10,14 @@ from datetime import datetime
 
 import aiohttp
 import yaml
+from dotenv import load_dotenv
 
 # Import local modules
 from .base_node import BaseAgentNode
 from .mcp_integration import call_tool_async
 from .tool_formatter import ToolFormatter
+
+load_dotenv()
 
 
 class LLMService:
@@ -38,7 +41,7 @@ class LLMService:
 
         # Build message content (text + images for Claude)
         content = LLMService._build_claude_content(prompt, images)
-        
+
         data = {
             "model": "claude-sonnet-4-20250514",
             "max_tokens": 64000,
@@ -80,44 +83,46 @@ class LLMService:
         """Build Claude API content with text and images"""
         if not images:
             return prompt
-            
+
         # Handle different image data structures
         image_list = []
         if isinstance(images, list):
             image_list = images
         else:
             image_list = [images]
-        
+
         # Build content array for Claude
         content = [{"type": "text", "text": prompt}]
-        
+
         for image_data in image_list:
             # Skip if not image content
-            if not (hasattr(image_data, 'type') and image_data.type == 'image'):
+            if not (hasattr(image_data, "type") and image_data.type == "image"):
                 continue
-                
+
             # Extract image data
-            if hasattr(image_data, 'data'):
+            if hasattr(image_data, "data"):
                 # Determine media type
                 media_type = "image/png"  # Default
-                if hasattr(image_data, 'media_type'):
+                if hasattr(image_data, "media_type"):
                     media_type = image_data.media_type
-                elif hasattr(image_data, 'format'):
-                    if image_data.format.lower() in ['jpg', 'jpeg']:
+                elif hasattr(image_data, "format"):
+                    if image_data.format.lower() in ["jpg", "jpeg"]:
                         media_type = "image/jpeg"
-                    elif image_data.format.lower() == 'png':
+                    elif image_data.format.lower() == "png":
                         media_type = "image/png"
-                
+
                 # Add image to content
-                content.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": media_type,
-                        "data": str(image_data.data)
+                content.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": str(image_data.data),
+                        },
                     }
-                })
-        
+                )
+
         return content
 
 
