@@ -7,5 +7,6 @@ from .base_ago_node import AgoNode
 from .script_node import ScriptNode
 from .interactive_node import InteractiveNode
 from .agent_node import AgentNode
+from .merge_node import MergeNode
 
-__all__ = ["AgoNode", "ScriptNode", "InteractiveNode", "AgentNode"]
+__all__ = ["AgoNode", "ScriptNode", "InteractiveNode", "AgentNode", "MergeNode"]

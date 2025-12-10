@@ -35,6 +35,7 @@ Each node can be:
 - **script** - Execute shell commands with JSON I/O
 - **agent** - Run AI agents with template variables
 - **interactive** - Collect user input via terminal
+- **merge** - Combine outputs from multiple parallel nodes
 
 ## Examples in this Directory
 
@@ -54,13 +55,20 @@ Interactive workflow demonstrating:
 Parallel workflow demonstrating:
 - Fan-out: One input triggers multiple agents
 - Parallel execution of sentiment, summary, and keyword extraction
-- Fan-in: Merge all results into a combined report
+- Fan-in: Merge all results with a custom script
+
+### 4. Parallel with MergeNode (`parallel_with_merge.spec`)
+Parallel workflow using built-in MergeNode:
+- Same parallel pattern as above
+- Uses MergeNode instead of custom script
+- Demonstrates dict merge strategy
 
 ## Documentation
 
 - [Quick Start Guide](./QUICK_START.md)
 - [Linear Workflow Guide](./LINEAR_WORKFLOW.md)
 - [Field Mapping Guide](./FIELD_MAPPING.md)
+- [MergeNode Guide](./MERGE_NODE.md) - **NEW**: Combine parallel results
 
 ## Scripts
 
@@ -81,6 +89,7 @@ Node types are defined in `ago/core/nodes/`:
 - `script_node.py` - ScriptNode implementation
 - `interactive_node.py` - InteractiveNode implementation
 - `agent_node.py` - AgentNode implementation
+- `merge_node.py` - MergeNode implementation (for combining parallel results)
 
 To add a new node type (e.g., CSV processing):
 

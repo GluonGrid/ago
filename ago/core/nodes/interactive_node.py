@@ -3,43 +3,30 @@
 InteractiveNode: Collect user input via terminal during workflow execution
 """
 import json
-from typing import Dict
+from typing import Dict, List, Optional
 
-from pocketflow import AsyncNode
-
-from .utils import store_node_output
+from .base_ago_node import AgoNode
 
 
-class InteractiveNode(AsyncNode):
+class InteractiveNode(AgoNode):
     """Get user input interactively via terminal"""
 
     def __init__(
         self,
         name: str,
         prompt: str,
-        fields: list = None,
-        output_mapping: Dict = None,
+        fields: Optional[List[Dict]] = None,
+        output_mapping: Optional[Dict[str, str]] = None,
     ):
-        super().__init__()
-        self.name = name
+        # InteractiveNode doesn't need input_mapping (it gets input from user)
+        super().__init__(name, input_mapping=None, output_mapping=output_mapping)
         self.prompt = prompt
         self.fields = fields or [{"name": "input", "label": "Enter value"}]
-        self.output_mapping = output_mapping or {}
-
-    async def prep_async(self, shared):
-        """Show previous output if available"""
-        return {"previous_output": shared.get("output")}
 
     async def exec_async(self, prep_res):
         """Prompt user for input via terminal"""
         print(f"\n📝 {self.name}")
         print(f"{self.prompt}\n")
-
-        # Show previous output if available
-        if prep_res.get("previous_output"):
-            print("Previous step output:")
-            print(json.dumps(prep_res["previous_output"], indent=2))
-            print()
 
         # Collect input for each field
         user_data = {}
@@ -61,14 +48,3 @@ class InteractiveNode(AsyncNode):
 
         print()
         return {"output": user_data, "success": True}
-
-    async def post_async(self, shared, prep_res, exec_res):
-        """Store output with dotted notation support"""
-        output = exec_res.get("output")
-
-        # Store output under node name: shared[node_name] = output
-        # Also create optional shortcuts via output_mapping
-        store_node_output(self.name, output, self.output_mapping, shared)
-
-        shared["success"] = exec_res.get("success", True)
-        return "default"

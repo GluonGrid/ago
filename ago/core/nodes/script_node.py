@@ -4,39 +4,23 @@ ScriptNode: Execute shell scripts with JSON input/output
 """
 import json
 import subprocess
-from typing import Any, Dict
+from typing import Dict, Optional
 
-from pocketflow import AsyncNode
-
-from .utils import resolve_inputs, store_node_output
+from .base_ago_node import AgoNode
 
 
-class ScriptNode(AsyncNode):
+class ScriptNode(AgoNode):
     """Execute a script and pass output to next step"""
 
     def __init__(
         self,
         name: str,
         script_cmd: str,
-        input_mapping: Dict = None,
-        output_mapping: Dict = None,
+        input_mapping: Optional[Dict[str, str]] = None,
+        output_mapping: Optional[Dict[str, str]] = None,
     ):
-        super().__init__()
-        self.name = name
+        super().__init__(name, input_mapping, output_mapping)
         self.script_cmd = script_cmd
-        self.input_mapping = input_mapping or {}
-        self.output_mapping = output_mapping or {}
-
-    async def prep_async(self, shared):
-        """Get input from previous step with field mapping"""
-        if self.input_mapping:
-            # Use dotted notation: sentiment.content, node.field, etc.
-            input_data = resolve_inputs(self.input_mapping, shared)
-        else:
-            # No mapping - pass empty dict
-            input_data = {}
-
-        return {"input": input_data}
 
     async def exec_async(self, prep_res):
         """Execute script"""
@@ -69,14 +53,3 @@ class ScriptNode(AsyncNode):
 
         print(f"[ScriptNode:{self.name}] Output: {output}")
         return {"output": output, "success": True}
-
-    async def post_async(self, shared, prep_res, exec_res):
-        """Store output with dotted notation support"""
-        output = exec_res.get("output")
-
-        # Store output under node name: shared[node_name] = output
-        # Also create optional shortcuts via output_mapping
-        store_node_output(self.name, output, self.output_mapping, shared)
-
-        shared["success"] = exec_res.get("success", True)
-        return "default"  # PocketFlow uses "default" for >> edges

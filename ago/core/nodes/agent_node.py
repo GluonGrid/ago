@@ -3,16 +3,12 @@
 AgentNode: Execute AI agents with template variable support
 """
 import asyncio
-import json
-import re
-from typing import Dict
+from typing import Dict, Optional
 
-from pocketflow import AsyncNode
-
-from .utils import resolve_field_path, resolve_inputs, store_node_output
+from .base_ago_node import AgoNode
 
 
-class AgentNode(AsyncNode):
+class AgentNode(AgoNode):
     """Execute agent with input from previous step"""
 
     def __init__(
@@ -20,44 +16,23 @@ class AgentNode(AsyncNode):
         name: str,
         template: str,
         prompt_template: str,
-        input_mapping: Dict = None,
-        output_mapping: Dict = None,
+        input_mapping: Optional[Dict[str, str]] = None,
+        output_mapping: Optional[Dict[str, str]] = None,
     ):
-        super().__init__()
-        self.name = name
+        super().__init__(name, input_mapping, output_mapping)
         self.template = template
         self.prompt_template = prompt_template
-        self.input_mapping = input_mapping or {}
-        self.output_mapping = output_mapping or {}
-        self.daemon = None
 
     async def prep_async(self, shared):
-        """Get input and format prompt with dotted notation"""
-        if self.input_mapping:
-            # Use dotted notation: sentiment.content, node.field, etc.
-            input_data = resolve_inputs(self.input_mapping, shared)
-        else:
-            # No mapping - empty dict
-            input_data = {}
+        """Get input and format prompt with template resolution"""
+        # Use parent's prep_async to get inputs
+        prep_res = await super().prep_async(shared)
 
-        # Replace template variables in prompt using dotted notation
-        # Support: {{node.field}}, {{field}}
-        prompt = self.prompt_template
+        # Resolve template variables in prompt using parent's resolve_template
+        prompt = self.resolve_template(self.prompt_template, shared)
 
-        # Find all {{...}} patterns
-        pattern = r"\{\{([^}]+)\}\}"
-        matches = re.findall(pattern, prompt)
-
-        for match in matches:
-            match = match.strip()
-
-            # Dotted notation: {{node.field}} or {{field}}
-            resolved = resolve_field_path(match, shared)
-            value = str(resolved) if resolved is not None else ""
-
-            prompt = prompt.replace(f"{{{{{match}}}}}", value)
-
-        return {"prompt": prompt, "input": input_data}
+        prep_res["prompt"] = prompt
+        return prep_res
 
     async def exec_async(self, prep_res):
         """Run agent"""
@@ -111,14 +86,3 @@ class AgentNode(AsyncNode):
 
             print(f"[AgentNode:{self.name}] Traceback: {traceback.format_exc()}")
             return {"error": str(e), "success": False}
-
-    async def post_async(self, shared, prep_res, exec_res):
-        """Store output with dotted notation support"""
-        output = exec_res.get("output")
-
-        # Store output under node name: shared[node_name] = output
-        # Also create optional shortcuts via output_mapping
-        store_node_output(self.name, output, self.output_mapping, shared)
-
-        shared["success"] = exec_res.get("success", True)
-        return "default"  # PocketFlow uses "default" for >> edges
