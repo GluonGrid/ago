@@ -45,6 +45,7 @@ def parse_flow_syntax(nodes: Dict, flow_str: str) -> None:
         if line.strip() and not line.strip().startswith('#')
     ]
 
+    # First pass: parse all edges and track connections
     for line in lines:
         # Handle conditional edges: node -"action">> target
         if '-"' in line or "-'" in line:
@@ -52,6 +53,9 @@ def parse_flow_syntax(nodes: Dict, flow_str: str) -> None:
         # Handle regular edges: node >> target
         elif '>>' in line:
             _parse_regular_edge(line, nodes)
+
+    # Second pass: detect parallel nodes with successors and convert to ParallelFlowNode
+    _convert_parallel_to_flow_nodes(nodes)
 
 
 def _parse_regular_edge(line: str, nodes: Dict) -> None:
@@ -62,6 +66,8 @@ def _parse_regular_edge(line: str, nodes: Dict) -> None:
         line: Flow line (e.g., "a >> b >> c")
         nodes: Dict of node instances
     """
+    from .nodes import ParallelNode
+
     parts = [p.strip() for p in line.split('>>')]
 
     for i in range(len(parts) - 1):
@@ -73,14 +79,49 @@ def _parse_regular_edge(line: str, nodes: Dict) -> None:
         # Parse target: "node" or "[node1, node2]"
         targets = _parse_node_list(target)
 
-        # Connect: each source >> each target
-        for src in sources:
+        # Fan-out: single source >> multiple targets → create ParallelNode
+        if len(sources) == 1 and len(targets) > 1:
+            src = sources[0]
             if src not in nodes:
                 raise ValueError(f"Unknown node in flow: '{src}'")
+
+            # Mark these targets as being part of a parallel group
+            # This will be used later to detect if they need sub-flows
+            parallel_node_name = f"_parallel_{src}_to_{'_'.join(targets)}"
+            target_nodes = []
             for tgt in targets:
                 if tgt not in nodes:
                     raise ValueError(f"Unknown node in flow: '{tgt}'")
+                target_nodes.append(nodes[tgt])
+                # Mark node as part of parallel execution
+                if not hasattr(nodes[tgt], '_parallel_group'):
+                    nodes[tgt]._parallel_group = parallel_node_name
+
+            parallel_node = ParallelNode(parallel_node_name, target_nodes)
+            nodes[parallel_node_name] = parallel_node
+
+            # Connect: source >> parallel_node
+            nodes[src] >> parallel_node
+
+        # Fan-in: multiple sources >> single target → each connects separately
+        elif len(sources) > 1 and len(targets) == 1:
+            tgt = targets[0]
+            if tgt not in nodes:
+                raise ValueError(f"Unknown node in flow: '{tgt}'")
+            for src in sources:
+                if src not in nodes:
+                    raise ValueError(f"Unknown node in flow: '{src}'")
                 nodes[src] >> nodes[tgt]
+
+        # Linear: single source >> single target
+        else:
+            for src in sources:
+                if src not in nodes:
+                    raise ValueError(f"Unknown node in flow: '{src}'")
+                for tgt in targets:
+                    if tgt not in nodes:
+                        raise ValueError(f"Unknown node in flow: '{tgt}'")
+                    nodes[src] >> nodes[tgt]
 
 
 def _parse_conditional_edge(line: str, nodes: Dict) -> None:
@@ -135,6 +176,59 @@ def _parse_node_list(s: str) -> List[str]:
     else:
         # Single node
         return [s]
+
+
+def _convert_parallel_to_flow_nodes(nodes: Dict) -> None:
+    """
+    Convert ParallelNode to ParallelFlowNode when child nodes have successors.
+
+    This enables forked flows where each parallel branch can continue
+    through its own successor chain independently.
+
+    Args:
+        nodes: Dict of node instances
+    """
+    from .nodes import ParallelNode, ParallelFlowNode
+
+    # Find all ParallelNode instances
+    parallel_nodes_to_convert = []
+
+    for node_name, node in list(nodes.items()):
+        if isinstance(node, ParallelNode):
+            # Check if any of the parallel child nodes have successors
+            has_successors = any(
+                child.successors for child in node.parallel_nodes
+            )
+
+            if has_successors:
+                parallel_nodes_to_convert.append((node_name, node))
+
+    # Convert ParallelNode to ParallelFlowNode
+    for node_name, parallel_node in parallel_nodes_to_convert:
+        print(
+            f"[FlowParser] Converting {node_name} to ParallelFlowNode (children have successors)"
+        )
+
+        # Create ParallelFlowNode with the same child nodes
+        flow_node = ParallelFlowNode(
+            name=parallel_node.name,
+            start_nodes=parallel_node.parallel_nodes,
+        )
+
+        # Replace in nodes dict
+        nodes[node_name] = flow_node
+
+        # Transfer any incoming connections from ParallelNode to ParallelFlowNode
+        # Find nodes that point to the old ParallelNode and redirect them
+        for other_name, other_node in nodes.items():
+            if other_node is parallel_node:
+                continue
+
+            # Check if other_node has parallel_node as a successor
+            for action, successor in list(other_node.successors.items()):
+                if successor is parallel_node:
+                    # Replace the successor
+                    other_node.successors[action] = flow_node
 
 
 def detect_start_node(nodes: Dict, flow_str: str) -> str:
